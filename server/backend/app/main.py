@@ -18,6 +18,7 @@ from .models import SessionRecord
 from .schemas import SessionIn, SessionOut, SummaryOut, UserItem
 from .models import ModelUsageRecord
 from .schemas import ModelItem, ModelUsageIn, ModelUsageOut, SpendDateOut
+from .schemas import ModelUsagePageOut, SessionsPageOut
 
 APP_TITLE = "Copilot Usage Receiver"
 AI_CREDITS_DIVISOR = 1_000_000_000
@@ -323,27 +324,42 @@ def upsert_sessions_batch(
     return results
 
 
-@app.get("/api/v1/sessions", response_model=list[SessionOut])
+@app.get("/api/v1/sessions", response_model=SessionsPageOut)
 def list_sessions(
     user_id: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
-    limit: int = Query(default=100, ge=1, le=1000),
+    days: int = Query(default=30, ge=0, le=3650),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
-) -> list[SessionRecord]:
+) -> SessionsPageOut:
     from datetime import date as dt_date, timedelta
-    
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
-    
+
+    filters = [SessionRecord.started_at.is_not(None)]
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(SessionRecord.started_at >= cutoff)
+    if user_id:
+        filters.append(SessionRecord.user_id == user_id)
+
+    total = int(db.scalar(select(func.count(SessionRecord.id)).where(*filters)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    offset = (page - 1) * page_size
+
     query = (
         select(SessionRecord)
-        .where(SessionRecord.started_at.is_not(None))
-        .where(SessionRecord.started_at >= cutoff)
+        .where(*filters)
         .order_by(SessionRecord.started_at.desc())
-        .limit(limit)
+        .offset(offset)
+        .limit(page_size)
     )
-    if user_id:
-        query = query.where(SessionRecord.user_id == user_id)
-    return list(db.scalars(query))
+    items = list(db.scalars(query))
+    return SessionsPageOut(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
 
 
 @app.get("/api/v1/users", response_model=list[UserItem])
@@ -360,7 +376,7 @@ def list_users(db: Session = Depends(get_db)) -> list[UserItem]:
 @app.get("/api/v1/summary", response_model=SummaryOut)
 def get_summary(
     user_id: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=0, le=3650),
     db: Session = Depends(get_db),
 ) -> SummaryOut:
     from datetime import date as dt_date, timedelta
@@ -370,9 +386,10 @@ def get_summary(
         filters.append(SessionRecord.user_id == user_id)
     
     # Add date filtering
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
     filters.append(SessionRecord.started_at.is_not(None))
-    filters.append(SessionRecord.started_at >= cutoff)
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(SessionRecord.started_at >= cutoff)
 
     agg = db.execute(
         select(
@@ -413,17 +430,18 @@ def get_summary(
 @app.get("/api/v1/spend-summary", response_model=list[SpendDateOut])
 def get_spend_summary(
     user_id: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=0, le=3650),
     db: Session = Depends(get_db),
 ) -> list[SpendDateOut]:
     """Session metrics grouped by calendar date (from started_at), newest first."""
     from datetime import date as dt_date, timedelta
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
 
     filters = [
         SessionRecord.started_at.is_not(None),
-        SessionRecord.started_at >= cutoff,
     ]
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(SessionRecord.started_at >= cutoff)
     if user_id:
         filters.append(SessionRecord.user_id == user_id)
 
@@ -560,19 +578,31 @@ def upsert_model_usage_batch(
     ]
 
 
-@app.get("/api/v1/model-usage", response_model=list[ModelUsageOut])
+@app.get("/api/v1/model-usage", response_model=ModelUsagePageOut)
 def list_model_usage(
     user_id: str | None = Query(default=None),
     date: str | None = Query(default=None),
     model: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=0, le=3650),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
-) -> list[ModelUsageOut]:
+) -> ModelUsagePageOut:
     """List stored model-level usage, optionally filtered by user_id, date range, and/or model."""
     from datetime import date as dt_date, timedelta
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
 
-    query = select(
+    filters = [ModelUsageRecord.date.is_not(None)]
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(ModelUsageRecord.date >= cutoff)
+    if user_id:
+        filters.append(ModelUsageRecord.user_id == user_id)
+    if date:
+        filters.append(ModelUsageRecord.date == date)
+    if model:
+        filters.append(ModelUsageRecord.model == model)
+
+    grouped = select(
         ModelUsageRecord.date,
         ModelUsageRecord.user_id,
         ModelUsageRecord.model,
@@ -581,28 +611,24 @@ def list_model_usage(
         func.coalesce(func.sum(ModelUsageRecord.output_tokens), 0),
         func.coalesce(func.sum(ModelUsageRecord.session_count), 0),
         func.coalesce(func.sum(ModelUsageRecord.request_count), 0),
-    ).where(
-        ModelUsageRecord.date.is_not(None),
-        ModelUsageRecord.date >= cutoff,
-    )
-    if user_id:
-        query = query.where(ModelUsageRecord.user_id == user_id)
-    if date:
-        query = query.where(ModelUsageRecord.date == date)
-    if model:
-        query = query.where(ModelUsageRecord.model == model)
-
-    query = query.group_by(
+    ).where(*filters).group_by(
         ModelUsageRecord.date,
         ModelUsageRecord.user_id,
         ModelUsageRecord.model,
-    ).order_by(
-        ModelUsageRecord.date.desc(),
-        func.sum(ModelUsageRecord.nano_aiu).desc(),
     )
 
+    count_subquery = grouped.subquery()
+    total = int(db.scalar(select(func.count()).select_from(count_subquery)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    offset = (page - 1) * page_size
+
+    query = grouped.order_by(
+        ModelUsageRecord.date.desc(),
+        func.sum(ModelUsageRecord.nano_aiu).desc(),
+    ).offset(offset).limit(page_size)
+
     records = db.execute(query).all()
-    return [
+    items = [
         ModelUsageOut(
             date=r[0],
             user_id=r[1],
@@ -616,6 +642,13 @@ def list_model_usage(
         )
         for r in records
     ]
+    return ModelUsagePageOut(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
 
 
 @app.get("/api/v1/models", response_model=list[ModelItem])

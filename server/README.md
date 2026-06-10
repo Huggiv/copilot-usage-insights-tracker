@@ -52,12 +52,44 @@ Sample payload:
 - `GET /api/v1/sessions`
 - `GET /api/v1/sessions?user_id=alex`
 
+Query options:
+
+- `days` (default `30`, use `0` for all-time)
+- `page` (default `1`)
+- `page_size` (default `100`, max `1000`)
+
+Response shape:
+
+```json
+{
+  "items": [],
+  "page": 1,
+  "page_size": 100,
+  "total": 0,
+  "total_pages": 0
+}
+```
+
 ### Users for filter dropdown
 - `GET /api/v1/users`
 
 ### Summary metrics
 - `GET /api/v1/summary`
 - `GET /api/v1/summary?user_id=alex`
+
+Use `days=0` to request all-time summary totals.
+
+### Model usage list
+- `GET /api/v1/model-usage`
+- `GET /api/v1/model-usage?user_id=alex&model=gpt-4o`
+
+Query options:
+
+- `days` (default `30`, use `0` for all-time)
+- `page` (default `1`)
+- `page_size` (default `100`, max `1000`)
+
+Response shape matches the sessions pagination envelope.
 
 ## Security and Runtime Controls
 

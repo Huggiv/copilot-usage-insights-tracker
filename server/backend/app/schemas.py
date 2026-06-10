@@ -145,3 +145,19 @@ class ModelUsageOut(BaseModel):
 
 class ModelItem(BaseModel):
     model: str
+
+
+class SessionsPageOut(BaseModel):
+    items: list[SessionOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+
+
+class ModelUsagePageOut(BaseModel):
+    items: list[ModelUsageOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
