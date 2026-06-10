@@ -51,7 +51,7 @@ export function CreditsMeter({ summary, selectedDays, selectedPeriod }) {
   return (
     <article className="credits-meter-card">
       <div className="credits-meter-header">
-        <span className="credits-meter-title">AI Credits Meter</span>
+        <span className="credits-meter-title">AI CREDITS METER for VS CODE Chat</span>
         <span className="credits-meter-sub">
           Used:&nbsp;<strong>{fmt(creditsUsed, 4)}</strong>&ensp;/&ensp;Target:&nbsp;<strong>{fmt(creditsTarget, 0)}</strong>&ensp;·&ensp;<strong>{meterPct.toFixed(2)}%</strong>
         </span>
