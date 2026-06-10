@@ -21,6 +21,14 @@ Each chat session is stored in SQLite (`chat_sessions` table) with:
 
 ### Health
 - `GET /health`
+- `GET /ready`
+- `GET /metrics`
+
+Operational notes:
+
+- API responses include `X-Request-Id` for trace correlation.
+- Backend logs emit structured JSON per request with method, path, status, duration, and request ID.
+- `/metrics` exposes ingestion/query counters and query latency aggregates.
 
 ### Upsert a session
 - `POST /api/v1/sessions`

@@ -1,9 +1,11 @@
 import json
+import logging
 import os
 import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -116,6 +118,28 @@ RATE_LIMITER = InMemoryRateLimiter(
     max_requests=RUNTIME_CONFIG.rate_limit_max_requests,
 )
 
+LOGGER = logging.getLogger("copilot-usage-backend")
+if not LOGGER.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+
+def _is_write_endpoint(path: str) -> bool:
+    return path in WRITE_ENDPOINTS
+
+
+def _is_query_endpoint(path: str) -> bool:
+    return path.startswith("/api/v1/") and not _is_write_endpoint(path)
+
+
+METRICS = {
+    "ingest_requests_total": 0,
+    "ingest_errors_total": 0,
+    "query_requests_total": 0,
+    "query_errors_total": 0,
+    "query_latency_ms_sum": 0.0,
+    "query_latency_ms_count": 0,
+}
+
 Path(os.getenv("DB_PATH", "/app/data/copilot_usage.db")).parent.mkdir(parents=True, exist_ok=True)
 Base.metadata.create_all(bind=engine)
 apply_migrations(engine)
@@ -222,6 +246,73 @@ def healthcheck() -> dict:
         "environment": RUNTIME_CONFIG.environment,
         "auth_required": RUNTIME_CONFIG.auth_required,
     }
+
+
+@app.get("/ready")
+def readiness(db: Session = Depends(get_db)) -> dict:
+    db.execute(select(1))
+    return {"status": "ready"}
+
+
+@app.get("/metrics")
+def metrics() -> dict:
+    avg_query_latency_ms = (
+        METRICS["query_latency_ms_sum"] / METRICS["query_latency_ms_count"]
+        if METRICS["query_latency_ms_count"]
+        else 0.0
+    )
+    return {
+        **METRICS,
+        "query_latency_ms_avg": round(avg_query_latency_ms, 3),
+    }
+
+
+@app.middleware("http")
+async def observe_and_log_requests(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", str(uuid4()))
+    started = time.perf_counter()
+    status_code = 500
+    error_message = ""
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+    except Exception as exc:  # noqa: BLE001
+        error_message = str(exc)
+        raise
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        path = request.url.path
+
+        if _is_write_endpoint(path):
+            METRICS["ingest_requests_total"] += 1
+            if status_code >= 400:
+                METRICS["ingest_errors_total"] += 1
+
+        if _is_query_endpoint(path):
+            METRICS["query_requests_total"] += 1
+            METRICS["query_latency_ms_sum"] += elapsed_ms
+            METRICS["query_latency_ms_count"] += 1
+            if status_code >= 400:
+                METRICS["query_errors_total"] += 1
+
+        LOGGER.info(
+            json.dumps(
+                {
+                    "event": "http_request",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": path,
+                    "status_code": status_code,
+                    "duration_ms": round(elapsed_ms, 3),
+                    "client": request.client.host if request.client else "unknown",
+                    "error": error_message,
+                }
+            )
+        )
+
+    response.headers["x-request-id"] = request_id
+    return response
 
 
 @app.post("/api/v1/sessions", response_model=SessionOut)
