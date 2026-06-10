@@ -59,6 +59,25 @@ Sample payload:
 - `GET /api/v1/summary`
 - `GET /api/v1/summary?user_id=alex`
 
+## Security and Runtime Controls
+
+The collector now supports environment-driven API hardening controls.
+
+- `APP_ENV`: Runtime environment (`development`, `test`, `production`, etc.).
+- `API_AUTH_REQUIRED`: Optional override (`true`/`false`). If unset, auth is required automatically outside dev/test/local environments.
+- `API_AUTH_TOKEN`: Shared token for write endpoints. Accepted as `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+- `CORS_ALLOWED_ORIGINS`: Comma-separated list of allowed origins. In non-dev environments, default is no allowed origins unless explicitly set.
+- `MAX_INGEST_BODY_BYTES`: Max allowed POST payload size for ingestion endpoints. Default `1048576`.
+- `RATE_LIMIT_WINDOW_SECONDS`: Sliding rate-limit window for write endpoints. Default `60`.
+- `RATE_LIMIT_MAX_REQUESTS`: Max write requests allowed per client/path within the window. Default `120`.
+
+Write endpoints protected by auth and limits:
+
+- `POST /api/v1/sessions`
+- `POST /api/v1/sessions/batch`
+- `POST /api/v1/model-usage`
+- `POST /api/v1/model-usage/batch`
+
 ## Run With Docker
 
 From this `server/` folder:

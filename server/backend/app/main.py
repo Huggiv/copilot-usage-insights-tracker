@@ -1,8 +1,13 @@
 import json
 import os
+import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -15,6 +20,99 @@ from .schemas import ModelItem, ModelUsageIn, ModelUsageOut, SpendDateOut
 
 APP_TITLE = "Copilot Usage Receiver"
 AI_CREDITS_DIVISOR = 1_000_000_000
+WRITE_ENDPOINTS = {
+    "/api/v1/sessions",
+    "/api/v1/sessions/batch",
+    "/api/v1/model-usage",
+    "/api/v1/model-usage/batch",
+}
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    environment: str
+    auth_required: bool
+    auth_token: str
+    cors_allowed_origins: list[str]
+    max_ingest_body_bytes: int
+    rate_limit_window_seconds: int
+    rate_limit_max_requests: int
+
+
+def _is_truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _load_runtime_config() -> RuntimeConfig:
+    environment = os.getenv("APP_ENV", "development").strip().lower()
+    is_non_dev = environment not in {"dev", "development", "local", "test"}
+
+    auth_token = os.getenv("API_AUTH_TOKEN", "").strip()
+    auth_required_env = os.getenv("API_AUTH_REQUIRED")
+    auth_required = is_non_dev if auth_required_env is None else _is_truthy(auth_required_env)
+
+    cors_raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    if cors_raw.strip():
+        cors_allowed_origins = _split_csv(cors_raw)
+    elif is_non_dev:
+        cors_allowed_origins = []
+    else:
+        cors_allowed_origins = ["*"]
+
+    return RuntimeConfig(
+        environment=environment,
+        auth_required=auth_required,
+        auth_token=auth_token,
+        cors_allowed_origins=cors_allowed_origins,
+        max_ingest_body_bytes=int(os.getenv("MAX_INGEST_BODY_BYTES", "1048576")),
+        rate_limit_window_seconds=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
+        rate_limit_max_requests=int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "120")),
+    )
+
+
+RUNTIME_CONFIG = _load_runtime_config()
+
+
+def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": message,
+            }
+        },
+    )
+
+
+class InMemoryRateLimiter:
+    def __init__(self, window_seconds: int, max_requests: int) -> None:
+        self.window_seconds = max(1, window_seconds)
+        self.max_requests = max(1, max_requests)
+        self._requests: dict[str, deque[float]] = {}
+
+    def allow(self, key: str, now: float | None = None) -> bool:
+        current = now if now is not None else time.time()
+        queue = self._requests.setdefault(key, deque())
+        cutoff = current - self.window_seconds
+        while queue and queue[0] < cutoff:
+            queue.popleft()
+
+        if len(queue) >= self.max_requests:
+            return False
+
+        queue.append(current)
+        return True
+
+
+RATE_LIMITER = InMemoryRateLimiter(
+    window_seconds=RUNTIME_CONFIG.rate_limit_window_seconds,
+    max_requests=RUNTIME_CONFIG.rate_limit_max_requests,
+)
 
 Path(os.getenv("DB_PATH", "/app/data/copilot_usage.db")).parent.mkdir(parents=True, exist_ok=True)
 Base.metadata.create_all(bind=engine)
@@ -37,20 +135,112 @@ app = FastAPI(title=APP_TITLE, version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=RUNTIME_CONFIG.cors_allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+@app.exception_handler(HTTPException)
+def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+
+    code_map = {
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        413: "payload_too_large",
+        422: "validation_error",
+        429: "rate_limited",
+    }
+    code = code_map.get(exc.status_code, "request_error")
+    return _error_response(exc.status_code, code, str(exc.detail))
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    return _error_response(422, "validation_error", str(exc))
+
+
+@app.middleware("http")
+async def enforce_ingest_limits(request: Request, call_next):
+    if request.method == "POST" and request.url.path in WRITE_ENDPOINTS:
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > RUNTIME_CONFIG.max_ingest_body_bytes:
+                    return _error_response(
+                        413,
+                        "payload_too_large",
+                        f"Payload exceeds max allowed size of {RUNTIME_CONFIG.max_ingest_body_bytes} bytes.",
+                    )
+            except ValueError:
+                return _error_response(422, "validation_error", "Invalid Content-Length header.")
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def enforce_rate_limits(request: Request, call_next):
+    if request.method == "POST" and request.url.path in WRITE_ENDPOINTS:
+        client_host = request.client.host if request.client else "unknown"
+        limit_key = f"{client_host}:{request.url.path}"
+        if not RATE_LIMITER.allow(limit_key):
+            return _error_response(429, "rate_limited", "Rate limit exceeded. Please retry later.")
+
+    return await call_next(request)
+
+
+def require_write_auth(request: Request) -> None:
+    if not RUNTIME_CONFIG.auth_required:
+        return
+
+    if not RUNTIME_CONFIG.auth_token:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "code": "forbidden",
+                    "message": "Server misconfiguration: auth is required but API_AUTH_TOKEN is not set.",
+                }
+            },
+        )
+
+    auth_header = request.headers.get("authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        supplied = auth_header[7:].strip()
+    else:
+        supplied = request.headers.get("x-api-key", "").strip()
+
+    if supplied != RUNTIME_CONFIG.auth_token:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "Missing or invalid API token.",
+                }
+            },
+        )
+
+
 @app.get("/health")
 def healthcheck() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "environment": RUNTIME_CONFIG.environment,
+        "auth_required": RUNTIME_CONFIG.auth_required,
+    }
 
 
 @app.post("/api/v1/sessions", response_model=SessionOut)
-def upsert_session(payload: SessionIn, db: Session = Depends(get_db)) -> SessionRecord:
+def upsert_session(
+    payload: SessionIn,
+    _: None = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> SessionRecord:
     existing = db.scalar(select(SessionRecord).where(SessionRecord.session_id == payload.session_id))
     record = _apply_upsert(existing, payload, db)
     db.commit()
@@ -86,11 +276,11 @@ def _apply_upsert(existing: SessionRecord | None, payload: SessionIn, db: Sessio
 @app.post("/api/v1/sessions/batch", response_model=list[SessionOut])
 def upsert_sessions_batch(
     payload: list[SessionIn],
+    _: None = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> list[SessionRecord]:
     """Upsert multiple sessions in a single request (max 500)."""
     if len(payload) > 500:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="Batch size must not exceed 500 sessions.")
 
     # Fetch all existing records matching the incoming session IDs in one query.
@@ -254,7 +444,11 @@ def get_spend_summary(
 # ── Model-level usage ────────────────────────────────────────────────────────
 
 @app.post("/api/v1/model-usage", response_model=ModelUsageOut)
-def upsert_model_usage(payload: ModelUsageIn, db: Session = Depends(get_db)) -> ModelUsageOut:
+def upsert_model_usage(
+    payload: ModelUsageIn,
+    _: None = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> ModelUsageOut:
     """Upsert model-level usage keyed by (date, user_id, model)."""
     query = select(ModelUsageRecord).where(
         ModelUsageRecord.date == payload.date,
@@ -301,16 +495,16 @@ def upsert_model_usage(payload: ModelUsageIn, db: Session = Depends(get_db)) -> 
 @app.post("/api/v1/model-usage/batch", response_model=list[ModelUsageOut])
 def upsert_model_usage_batch(
     payload: list[ModelUsageIn],
+    _: None = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> list[ModelUsageOut]:
     """Upsert model-level usage rows in batch (max 2000)."""
     if len(payload) > 2000:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="Batch size must not exceed 2000 model-usage rows.")
 
     output: list[ModelUsageOut] = []
     for item in payload:
-        row = upsert_model_usage(item, db)
+        row = upsert_model_usage(item, None, db)
         output.append(row)
     db.commit()
     return output
