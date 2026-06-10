@@ -13,6 +13,7 @@ node_modules/**
 
 # Exclude editor/workspace-only config
 .vscode/**
+.venv/**
 
 # Exclude development and docs artifacts not needed at runtime
 docs/**
@@ -25,3 +26,4 @@ server/**
 **/node_modules/**
 **/dist/**
 **/*.db
+images/copilot_usage_dashboard.gif
