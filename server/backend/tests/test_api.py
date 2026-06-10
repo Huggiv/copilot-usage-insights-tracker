@@ -1,7 +1,14 @@
 import importlib
 import sys
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+
+
+# Ensure tests can import the local backend package regardless of pytest rootdir.
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 
 def _fresh_client(monkeypatch, tmp_path, auth_required=True):
