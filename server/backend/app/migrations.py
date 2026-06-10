@@ -1,4 +1,4 @@
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
 
@@ -32,6 +32,12 @@ def _mark_applied(engine: Engine, version: int, name: str) -> None:
             text("INSERT INTO schema_migrations(version, name) VALUES (:version, :name)"),
             {"version": version, "name": name},
         )
+
+
+def _column_exists(engine: Engine, table_name: str, column_name: str) -> bool:
+    inspector = inspect(engine)
+    columns = inspector.get_columns(table_name)
+    return any(column.get("name") == column_name for column in columns)
 
 
 def apply_migrations(engine: Engine) -> None:
@@ -70,6 +76,15 @@ def apply_migrations(engine: Engine) -> None:
 
     for version, name, statements in migrations:
         if _is_applied(engine, version):
+            continue
+
+        # Handle pre-existing DBs where these columns were added manually before
+        # the tracked migrations table existed.
+        if version == 1 and _column_exists(engine, "chat_sessions", "patch_count"):
+            _mark_applied(engine, version, name)
+            continue
+        if version == 2 and _column_exists(engine, "model_usage", "session_id"):
+            _mark_applied(engine, version, name)
             continue
 
         with engine.begin() as conn:
