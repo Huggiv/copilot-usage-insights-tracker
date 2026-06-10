@@ -1,0 +1,27 @@
+src/**
+test/**
+.github/**
+.gitignore
+tsconfig.json
+*.zip
+*.tgz
+*.vsix
+.DS_Store
+**/.DS_Store
+node_modules/**
+
+
+# Exclude editor/workspace-only config
+.vscode/**
+
+# Exclude development and docs artifacts not needed at runtime
+docs/**
+images/copilot-chat-usage-icon-128.png
+
+# Exclude server and local data artifacts from extension package
+server/**
+
+# Exclude nested dependency/build outputs if present
+**/node_modules/**
+**/dist/**
+**/*.db
