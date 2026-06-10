@@ -22,6 +22,10 @@ const EMPTY_SUMMARY = {
 };
 
 function resolvePeriodToDays(period) {
+  if (period === 'all_time') {
+    return 0;
+  }
+
   if (period === 'current_month') {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -71,8 +75,8 @@ export default function App() {
     ])
       .then(([summaryRes, sessionsRes, modelUsageRes]) => {
         setSummary(summaryRes);
-        setSessions(sessionsRes);
-        setModelUsage(modelUsageRes);
+        setSessions(sessionsRes?.items || []);
+        setModelUsage(modelUsageRes?.items || []);
       })
       .catch((err) => setError(err.message || 'Failed to load dashboard data'))
       .finally(() => setLoading(false));

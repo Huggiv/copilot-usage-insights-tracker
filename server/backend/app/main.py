@@ -1,56 +1,337 @@
 import json
+import logging
 import os
+import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_db
+from .database import Base, DB_PATH, engine, get_db
+from .migrations import apply_migrations
 from .models import SessionRecord
 from .schemas import SessionIn, SessionOut, SummaryOut, UserItem
 from .models import ModelUsageRecord
 from .schemas import ModelItem, ModelUsageIn, ModelUsageOut, SpendDateOut
+from .schemas import ModelUsagePageOut, SessionsPageOut
 
 APP_TITLE = "Copilot Usage Receiver"
 AI_CREDITS_DIVISOR = 1_000_000_000
+WRITE_ENDPOINTS = {
+    "/api/v1/sessions",
+    "/api/v1/sessions/batch",
+    "/api/v1/model-usage",
+    "/api/v1/model-usage/batch",
+}
 
-Path(os.getenv("DB_PATH", "/app/data/copilot_usage.db")).parent.mkdir(parents=True, exist_ok=True)
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    environment: str
+    auth_required: bool
+    auth_token: str
+    cors_allowed_origins: list[str]
+    max_ingest_body_bytes: int
+    rate_limit_window_seconds: int
+    rate_limit_max_requests: int
+
+
+def _is_truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _load_runtime_config() -> RuntimeConfig:
+    environment = os.getenv("APP_ENV", "development").strip().lower()
+    is_non_dev = environment not in {"dev", "development", "local", "test"}
+
+    auth_token = os.getenv("API_AUTH_TOKEN", "").strip()
+    auth_required_env = os.getenv("API_AUTH_REQUIRED")
+    auth_required = is_non_dev if auth_required_env is None else _is_truthy(auth_required_env)
+
+    cors_raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    if cors_raw.strip():
+        cors_allowed_origins = _split_csv(cors_raw)
+    elif is_non_dev:
+        cors_allowed_origins = []
+    else:
+        cors_allowed_origins = ["*"]
+
+    return RuntimeConfig(
+        environment=environment,
+        auth_required=auth_required,
+        auth_token=auth_token,
+        cors_allowed_origins=cors_allowed_origins,
+        max_ingest_body_bytes=int(os.getenv("MAX_INGEST_BODY_BYTES", "1048576")),
+        rate_limit_window_seconds=int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
+        rate_limit_max_requests=int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "120")),
+    )
+
+
+RUNTIME_CONFIG = _load_runtime_config()
+
+
+def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "code": code,
+                "message": message,
+            }
+        },
+    )
+
+
+class InMemoryRateLimiter:
+    def __init__(self, window_seconds: int, max_requests: int) -> None:
+        self.window_seconds = max(1, window_seconds)
+        self.max_requests = max(1, max_requests)
+        self._requests: dict[str, deque[float]] = {}
+
+    def allow(self, key: str, now: float | None = None) -> bool:
+        current = now if now is not None else time.time()
+        queue = self._requests.setdefault(key, deque())
+        cutoff = current - self.window_seconds
+        while queue and queue[0] < cutoff:
+            queue.popleft()
+
+        if len(queue) >= self.max_requests:
+            return False
+
+        queue.append(current)
+        return True
+
+
+RATE_LIMITER = InMemoryRateLimiter(
+    window_seconds=RUNTIME_CONFIG.rate_limit_window_seconds,
+    max_requests=RUNTIME_CONFIG.rate_limit_max_requests,
+)
+
+LOGGER = logging.getLogger("copilot-usage-backend")
+if not LOGGER.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+
+def _is_write_endpoint(path: str) -> bool:
+    return path in WRITE_ENDPOINTS
+
+
+def _is_query_endpoint(path: str) -> bool:
+    return path.startswith("/api/v1/") and not _is_write_endpoint(path)
+
+
+METRICS = {
+    "ingest_requests_total": 0,
+    "ingest_errors_total": 0,
+    "query_requests_total": 0,
+    "query_errors_total": 0,
+    "query_latency_ms_sum": 0.0,
+    "query_latency_ms_count": 0,
+}
+
+Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 Base.metadata.create_all(bind=engine)
-
-# ── Lightweight runtime migrations (handles existing DBs without alembic) ────
-from sqlalchemy import inspect as sa_inspect, text as sa_text
-with engine.connect() as _conn:
-    _cols = {c["name"] for c in sa_inspect(engine).get_columns("chat_sessions")}
-    if "patch_count" not in _cols:
-        _conn.execute(sa_text("ALTER TABLE chat_sessions ADD COLUMN patch_count INTEGER DEFAULT 0"))
-        _conn.commit()
-
-with engine.connect() as _conn:
-    _model_cols = {c["name"] for c in sa_inspect(engine).get_columns("model_usage")}
-    if "session_id" not in _model_cols:
-        _conn.execute(sa_text("ALTER TABLE model_usage ADD COLUMN session_id VARCHAR(128)"))
-        _conn.commit()
+apply_migrations(engine)
 
 app = FastAPI(title=APP_TITLE, version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=RUNTIME_CONFIG.cors_allowed_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+@app.exception_handler(HTTPException)
+def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+
+    code_map = {
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        413: "payload_too_large",
+        422: "validation_error",
+        429: "rate_limited",
+    }
+    code = code_map.get(exc.status_code, "request_error")
+    return _error_response(exc.status_code, code, str(exc.detail))
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    return _error_response(422, "validation_error", str(exc))
+
+
+@app.middleware("http")
+async def enforce_ingest_limits(request: Request, call_next):
+    if request.method == "POST" and request.url.path in WRITE_ENDPOINTS:
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > RUNTIME_CONFIG.max_ingest_body_bytes:
+                    return _error_response(
+                        413,
+                        "payload_too_large",
+                        f"Payload exceeds max allowed size of {RUNTIME_CONFIG.max_ingest_body_bytes} bytes.",
+                    )
+            except ValueError:
+                return _error_response(422, "validation_error", "Invalid Content-Length header.")
+
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def enforce_rate_limits(request: Request, call_next):
+    if request.method == "POST" and request.url.path in WRITE_ENDPOINTS:
+        client_host = request.client.host if request.client else "unknown"
+        limit_key = f"{client_host}:{request.url.path}"
+        if not RATE_LIMITER.allow(limit_key):
+            return _error_response(429, "rate_limited", "Rate limit exceeded. Please retry later.")
+
+    return await call_next(request)
+
+
+def require_write_auth(request: Request) -> None:
+    if not RUNTIME_CONFIG.auth_required:
+        return
+
+    if not RUNTIME_CONFIG.auth_token:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "code": "forbidden",
+                    "message": "Server misconfiguration: auth is required but API_AUTH_TOKEN is not set.",
+                }
+            },
+        )
+
+    auth_header = request.headers.get("authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        supplied = auth_header[7:].strip()
+    else:
+        supplied = request.headers.get("x-api-key", "").strip()
+
+    if supplied != RUNTIME_CONFIG.auth_token:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "Missing or invalid API token.",
+                }
+            },
+        )
+
+
 @app.get("/health")
 def healthcheck() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "environment": RUNTIME_CONFIG.environment,
+        "auth_required": RUNTIME_CONFIG.auth_required,
+    }
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs", status_code=307)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
+
+
+@app.get("/ready")
+def readiness(db: Session = Depends(get_db)) -> dict:
+    db.execute(select(1))
+    return {"status": "ready"}
+
+
+@app.get("/metrics")
+def metrics() -> dict:
+    avg_query_latency_ms = (
+        METRICS["query_latency_ms_sum"] / METRICS["query_latency_ms_count"]
+        if METRICS["query_latency_ms_count"]
+        else 0.0
+    )
+    return {
+        **METRICS,
+        "query_latency_ms_avg": round(avg_query_latency_ms, 3),
+    }
+
+
+@app.middleware("http")
+async def observe_and_log_requests(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", str(uuid4()))
+    started = time.perf_counter()
+    status_code = 500
+    error_message = ""
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+    except Exception as exc:  # noqa: BLE001
+        error_message = str(exc)
+        raise
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        path = request.url.path
+
+        if _is_write_endpoint(path):
+            METRICS["ingest_requests_total"] += 1
+            if status_code >= 400:
+                METRICS["ingest_errors_total"] += 1
+
+        if _is_query_endpoint(path):
+            METRICS["query_requests_total"] += 1
+            METRICS["query_latency_ms_sum"] += elapsed_ms
+            METRICS["query_latency_ms_count"] += 1
+            if status_code >= 400:
+                METRICS["query_errors_total"] += 1
+
+        LOGGER.info(
+            json.dumps(
+                {
+                    "event": "http_request",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": path,
+                    "status_code": status_code,
+                    "duration_ms": round(elapsed_ms, 3),
+                    "client": request.client.host if request.client else "unknown",
+                    "error": error_message,
+                }
+            )
+        )
+
+    response.headers["x-request-id"] = request_id
+    return response
 
 
 @app.post("/api/v1/sessions", response_model=SessionOut)
-def upsert_session(payload: SessionIn, db: Session = Depends(get_db)) -> SessionRecord:
+def upsert_session(
+    payload: SessionIn,
+    _: None = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> SessionRecord:
     existing = db.scalar(select(SessionRecord).where(SessionRecord.session_id == payload.session_id))
     record = _apply_upsert(existing, payload, db)
     db.commit()
@@ -83,14 +364,48 @@ def _apply_upsert(existing: SessionRecord | None, payload: SessionIn, db: Sessio
     return existing
 
 
+def _model_usage_key(
+    *,
+    date: str,
+    user_id: str,
+    model: str,
+    session_id: str | None,
+) -> tuple[str, str, str, str]:
+    return (date, user_id, model, session_id or "")
+
+
+def _apply_model_usage_upsert(
+    existing: ModelUsageRecord | None,
+    payload: ModelUsageIn,
+    db: Session,
+) -> ModelUsageRecord:
+    if existing is None:
+        existing = ModelUsageRecord(
+            session_id=payload.session_id,
+            date=payload.date,
+            user_id=payload.user_id,
+            model=payload.model,
+        )
+        db.add(existing)
+    else:
+        existing.session_id = payload.session_id
+
+    existing.nano_aiu = payload.nano_aiu
+    existing.input_tokens = payload.input_tokens
+    existing.output_tokens = payload.output_tokens
+    existing.session_count = payload.session_count
+    existing.request_count = payload.request_count
+    return existing
+
+
 @app.post("/api/v1/sessions/batch", response_model=list[SessionOut])
 def upsert_sessions_batch(
     payload: list[SessionIn],
+    _: None = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> list[SessionRecord]:
     """Upsert multiple sessions in a single request (max 500)."""
     if len(payload) > 500:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="Batch size must not exceed 500 sessions.")
 
     # Fetch all existing records matching the incoming session IDs in one query.
@@ -111,27 +426,42 @@ def upsert_sessions_batch(
     return results
 
 
-@app.get("/api/v1/sessions", response_model=list[SessionOut])
+@app.get("/api/v1/sessions", response_model=SessionsPageOut)
 def list_sessions(
     user_id: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
-    limit: int = Query(default=100, ge=1, le=1000),
+    days: int = Query(default=30, ge=0, le=3650),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
-) -> list[SessionRecord]:
+) -> SessionsPageOut:
     from datetime import date as dt_date, timedelta
-    
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
-    
+
+    filters = [SessionRecord.started_at.is_not(None)]
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(SessionRecord.started_at >= cutoff)
+    if user_id:
+        filters.append(SessionRecord.user_id == user_id)
+
+    total = int(db.scalar(select(func.count(SessionRecord.id)).where(*filters)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    offset = (page - 1) * page_size
+
     query = (
         select(SessionRecord)
-        .where(SessionRecord.started_at.is_not(None))
-        .where(SessionRecord.started_at >= cutoff)
+        .where(*filters)
         .order_by(SessionRecord.started_at.desc())
-        .limit(limit)
+        .offset(offset)
+        .limit(page_size)
     )
-    if user_id:
-        query = query.where(SessionRecord.user_id == user_id)
-    return list(db.scalars(query))
+    items = list(db.scalars(query))
+    return SessionsPageOut(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
 
 
 @app.get("/api/v1/users", response_model=list[UserItem])
@@ -148,7 +478,7 @@ def list_users(db: Session = Depends(get_db)) -> list[UserItem]:
 @app.get("/api/v1/summary", response_model=SummaryOut)
 def get_summary(
     user_id: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=0, le=3650),
     db: Session = Depends(get_db),
 ) -> SummaryOut:
     from datetime import date as dt_date, timedelta
@@ -158,9 +488,10 @@ def get_summary(
         filters.append(SessionRecord.user_id == user_id)
     
     # Add date filtering
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
     filters.append(SessionRecord.started_at.is_not(None))
-    filters.append(SessionRecord.started_at >= cutoff)
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(SessionRecord.started_at >= cutoff)
 
     agg = db.execute(
         select(
@@ -201,17 +532,18 @@ def get_summary(
 @app.get("/api/v1/spend-summary", response_model=list[SpendDateOut])
 def get_spend_summary(
     user_id: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=0, le=3650),
     db: Session = Depends(get_db),
 ) -> list[SpendDateOut]:
     """Session metrics grouped by calendar date (from started_at), newest first."""
     from datetime import date as dt_date, timedelta
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
 
     filters = [
         SessionRecord.started_at.is_not(None),
-        SessionRecord.started_at >= cutoff,
     ]
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(SessionRecord.started_at >= cutoff)
     if user_id:
         filters.append(SessionRecord.user_id == user_id)
 
@@ -254,7 +586,11 @@ def get_spend_summary(
 # ── Model-level usage ────────────────────────────────────────────────────────
 
 @app.post("/api/v1/model-usage", response_model=ModelUsageOut)
-def upsert_model_usage(payload: ModelUsageIn, db: Session = Depends(get_db)) -> ModelUsageOut:
+def upsert_model_usage(
+    payload: ModelUsageIn,
+    _: None = Depends(require_write_auth),
+    db: Session = Depends(get_db),
+) -> ModelUsageOut:
     """Upsert model-level usage keyed by (date, user_id, model)."""
     query = select(ModelUsageRecord).where(
         ModelUsageRecord.date == payload.date,
@@ -267,22 +603,7 @@ def upsert_model_usage(payload: ModelUsageIn, db: Session = Depends(get_db)) -> 
         query = query.where(ModelUsageRecord.session_id.is_(None))
 
     existing = db.scalar(query)
-    if existing is None:
-        existing = ModelUsageRecord(
-            session_id=payload.session_id,
-            date=payload.date,
-            user_id=payload.user_id,
-            model=payload.model,
-        )
-        db.add(existing)
-    else:
-        existing.session_id = payload.session_id
-
-    existing.nano_aiu = payload.nano_aiu
-    existing.input_tokens = payload.input_tokens
-    existing.output_tokens = payload.output_tokens
-    existing.session_count = payload.session_count
-    existing.request_count = payload.request_count
+    existing = _apply_model_usage_upsert(existing, payload, db)
     db.commit()
     db.refresh(existing)
     return ModelUsageOut(
@@ -301,34 +622,89 @@ def upsert_model_usage(payload: ModelUsageIn, db: Session = Depends(get_db)) -> 
 @app.post("/api/v1/model-usage/batch", response_model=list[ModelUsageOut])
 def upsert_model_usage_batch(
     payload: list[ModelUsageIn],
+    _: None = Depends(require_write_auth),
     db: Session = Depends(get_db),
 ) -> list[ModelUsageOut]:
     """Upsert model-level usage rows in batch (max 2000)."""
+    if not payload:
+        return []
+
     if len(payload) > 2000:
-        from fastapi import HTTPException
         raise HTTPException(status_code=422, detail="Batch size must not exceed 2000 model-usage rows.")
 
-    output: list[ModelUsageOut] = []
+    existing_rows = list(
+        db.scalars(
+            select(ModelUsageRecord).where(
+                ModelUsageRecord.date.in_({item.date for item in payload}),
+                ModelUsageRecord.user_id.in_({item.user_id for item in payload}),
+                ModelUsageRecord.model.in_({item.model for item in payload}),
+            )
+        )
+    )
+    existing_map: dict[tuple[str, str, str, str], ModelUsageRecord] = {
+        _model_usage_key(
+            date=row.date,
+            user_id=row.user_id,
+            model=row.model,
+            session_id=row.session_id,
+        ): row
+        for row in existing_rows
+    }
+
+    rows: list[ModelUsageRecord] = []
     for item in payload:
-        row = upsert_model_usage(item, db)
-        output.append(row)
+        key = _model_usage_key(
+            date=item.date,
+            user_id=item.user_id,
+            model=item.model,
+            session_id=item.session_id,
+        )
+        row = _apply_model_usage_upsert(existing_map.get(key), item, db)
+        existing_map[key] = row
+        rows.append(row)
+
     db.commit()
-    return output
+    return [
+        ModelUsageOut(
+            date=row.date,
+            user_id=row.user_id,
+            model=row.model,
+            nano_aiu=row.nano_aiu,
+            input_tokens=row.input_tokens,
+            output_tokens=row.output_tokens,
+            session_count=row.session_count,
+            request_count=row.request_count,
+            ai_credits=round(row.nano_aiu / AI_CREDITS_DIVISOR, 4),
+        )
+        for row in rows
+    ]
 
 
-@app.get("/api/v1/model-usage", response_model=list[ModelUsageOut])
+@app.get("/api/v1/model-usage", response_model=ModelUsagePageOut)
 def list_model_usage(
     user_id: str | None = Query(default=None),
     date: str | None = Query(default=None),
     model: str | None = Query(default=None),
-    days: int = Query(default=30, ge=1, le=365),
+    days: int = Query(default=30, ge=0, le=3650),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1000),
     db: Session = Depends(get_db),
-) -> list[ModelUsageOut]:
+) -> ModelUsagePageOut:
     """List stored model-level usage, optionally filtered by user_id, date range, and/or model."""
     from datetime import date as dt_date, timedelta
-    cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
 
-    query = select(
+    filters = [ModelUsageRecord.date.is_not(None)]
+    if days > 0:
+        cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
+        filters.append(ModelUsageRecord.date >= cutoff)
+    if user_id:
+        filters.append(ModelUsageRecord.user_id == user_id)
+    if date:
+        filters.append(ModelUsageRecord.date == date)
+    if model:
+        filters.append(ModelUsageRecord.model == model)
+
+    grouped = select(
         ModelUsageRecord.date,
         ModelUsageRecord.user_id,
         ModelUsageRecord.model,
@@ -337,28 +713,24 @@ def list_model_usage(
         func.coalesce(func.sum(ModelUsageRecord.output_tokens), 0),
         func.coalesce(func.sum(ModelUsageRecord.session_count), 0),
         func.coalesce(func.sum(ModelUsageRecord.request_count), 0),
-    ).where(
-        ModelUsageRecord.date.is_not(None),
-        ModelUsageRecord.date >= cutoff,
-    )
-    if user_id:
-        query = query.where(ModelUsageRecord.user_id == user_id)
-    if date:
-        query = query.where(ModelUsageRecord.date == date)
-    if model:
-        query = query.where(ModelUsageRecord.model == model)
-
-    query = query.group_by(
+    ).where(*filters).group_by(
         ModelUsageRecord.date,
         ModelUsageRecord.user_id,
         ModelUsageRecord.model,
-    ).order_by(
-        ModelUsageRecord.date.desc(),
-        func.sum(ModelUsageRecord.nano_aiu).desc(),
     )
 
+    count_subquery = grouped.subquery()
+    total = int(db.scalar(select(func.count()).select_from(count_subquery)) or 0)
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+    offset = (page - 1) * page_size
+
+    query = grouped.order_by(
+        ModelUsageRecord.date.desc(),
+        func.sum(ModelUsageRecord.nano_aiu).desc(),
+    ).offset(offset).limit(page_size)
+
     records = db.execute(query).all()
-    return [
+    items = [
         ModelUsageOut(
             date=r[0],
             user_id=r[1],
@@ -372,6 +744,13 @@ def list_model_usage(
         )
         for r in records
     ]
+    return ModelUsagePageOut(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+    )
 
 
 @app.get("/api/v1/models", response_model=list[ModelItem])

@@ -1,10 +1,12 @@
 import os
 from collections.abc import Generator
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-DB_PATH = os.getenv("DB_PATH", "/app/data/copilot_usage.db")
+DEFAULT_DB_PATH = str(Path("data") / "copilot_usage.db")
+DB_PATH = os.getenv("DB_PATH", DEFAULT_DB_PATH)
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 # check_same_thread=False is required when using SQLite with FastAPI worker threads.

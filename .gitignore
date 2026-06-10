@@ -15,3 +15,4 @@ server/frontend/dist/
 server/data/
 .vscode/
 .vscode copy/
+.venv/*

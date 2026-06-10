@@ -1,4 +1,24 @@
+from datetime import datetime, timezone
+
 from pydantic import BaseModel, Field
+from pydantic import field_validator
+
+
+def _normalize_timestamp(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    normalized = raw.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat().replace("+00:00", "Z")
 
 
 class SessionIn(BaseModel):
@@ -18,6 +38,11 @@ class SessionIn(BaseModel):
     tool_call_count: int = 0
 
     raw_payload: dict = Field(default_factory=dict)
+
+    @field_validator("started_at", "ended_at", mode="before")
+    @classmethod
+    def normalize_timestamps(cls, value: str | None) -> str | None:
+        return _normalize_timestamp(value)
 
 
 class SessionOut(BaseModel):
@@ -87,6 +112,24 @@ class ModelUsageIn(BaseModel):
     session_count: int = 0
     request_count: int = 0
 
+    @field_validator("date", mode="before")
+    @classmethod
+    def normalize_date(cls, value: str) -> str:
+        if value is None:
+            raise ValueError("date is required")
+        raw = str(value).strip()
+        if not raw:
+            raise ValueError("date is required")
+
+        # Accept either YYYY-MM-DD or ISO timestamp and normalize to YYYY-MM-DD.
+        if "T" in raw:
+            ts = _normalize_timestamp(raw)
+            assert ts is not None
+            return ts[:10]
+
+        parsed = datetime.fromisoformat(raw)
+        return parsed.date().isoformat()
+
 
 class ModelUsageOut(BaseModel):
     date: str
@@ -102,3 +145,19 @@ class ModelUsageOut(BaseModel):
 
 class ModelItem(BaseModel):
     model: str
+
+
+class SessionsPageOut(BaseModel):
+    items: list[SessionOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+
+
+class ModelUsagePageOut(BaseModel):
+    items: list[ModelUsageOut]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
