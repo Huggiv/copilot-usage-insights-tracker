@@ -78,6 +78,13 @@ Write endpoints protected by auth and limits:
 - `POST /api/v1/model-usage`
 - `POST /api/v1/model-usage/batch`
 
+## Data Normalization and Migrations
+
+- Session timestamp fields (`started_at`, `ended_at`) are normalized to UTC ISO format (`YYYY-MM-DDTHH:MM:SSZ`) on ingest.
+- `model_usage.date` accepts `YYYY-MM-DD` or ISO timestamp values and is normalized to `YYYY-MM-DD`.
+- Backend startup runs explicit tracked SQL migrations via `schema_migrations` table.
+- Migrations currently cover compatibility columns and query indexes for common filters (`user_id`, `started_at/date`, `model`, `session_id`).
+
 ## Run With Docker
 
 From this `server/` folder:

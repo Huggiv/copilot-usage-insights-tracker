@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
+from .migrations import apply_migrations
 from .models import SessionRecord
 from .schemas import SessionIn, SessionOut, SummaryOut, UserItem
 from .models import ModelUsageRecord
@@ -116,20 +117,7 @@ RATE_LIMITER = InMemoryRateLimiter(
 
 Path(os.getenv("DB_PATH", "/app/data/copilot_usage.db")).parent.mkdir(parents=True, exist_ok=True)
 Base.metadata.create_all(bind=engine)
-
-# ── Lightweight runtime migrations (handles existing DBs without alembic) ────
-from sqlalchemy import inspect as sa_inspect, text as sa_text
-with engine.connect() as _conn:
-    _cols = {c["name"] for c in sa_inspect(engine).get_columns("chat_sessions")}
-    if "patch_count" not in _cols:
-        _conn.execute(sa_text("ALTER TABLE chat_sessions ADD COLUMN patch_count INTEGER DEFAULT 0"))
-        _conn.commit()
-
-with engine.connect() as _conn:
-    _model_cols = {c["name"] for c in sa_inspect(engine).get_columns("model_usage")}
-    if "session_id" not in _model_cols:
-        _conn.execute(sa_text("ALTER TABLE model_usage ADD COLUMN session_id VARCHAR(128)"))
-        _conn.commit()
+apply_migrations(engine)
 
 app = FastAPI(title=APP_TITLE, version="1.0.0")
 
