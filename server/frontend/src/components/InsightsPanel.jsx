@@ -40,16 +40,18 @@ function buildLinePath(pts) {
   return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ');
 }
 
-export function CreditsMeter({ summary, selectedDays }) {
+export function CreditsMeter({ summary, selectedDays, selectedPeriod }) {
   const dayCount = Number(selectedDays) || 30;
-  const creditsTarget = Math.max((100000 * dayCount) / 30, 1);
+  const creditsTarget = selectedPeriod === 'current_month'
+    ? 100000
+    : Math.max((100000 * dayCount) / 30, 1);
   const creditsUsed = Number(summary?.total_ai_credits) || 0;
   const meterPct = Math.min((creditsUsed / creditsTarget) * 100, 100);
 
   return (
     <article className="credits-meter-card">
       <div className="credits-meter-header">
-        <span className="credits-meter-title">AI Credits Meter</span>
+        <span className="credits-meter-title">AI CREDITS METER for VS CODE Chat</span>
         <span className="credits-meter-sub">
           Used:&nbsp;<strong>{fmt(creditsUsed, 4)}</strong>&ensp;/&ensp;Target:&nbsp;<strong>{fmt(creditsTarget, 0)}</strong>&ensp;·&ensp;<strong>{meterPct.toFixed(2)}%</strong>
         </span>

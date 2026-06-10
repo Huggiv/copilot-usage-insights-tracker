@@ -111,7 +111,11 @@ export default function App() {
       ) : (
         <>
           <section className="surface-section">
-            <CreditsMeter summary={summary} selectedDays={resolvePeriodToDays(selectedDays)} />
+            <CreditsMeter
+              summary={summary}
+              selectedDays={resolvePeriodToDays(selectedDays)}
+              selectedPeriod={selectedDays}
+            />
           </section>
 
           <section className="surface-section">
