@@ -149,9 +149,9 @@ Then open:
 ```bash
 cd backend
 python -m venv .venv
-. .venv/Scripts/activate
+. .venv/bin/activate
 pip install -r requirements.txt
-set DB_PATH=./local.db
+export DB_PATH=./local.db
 uvicorn app.main:app --reload
 ```
 
@@ -160,6 +160,6 @@ uvicorn app.main:app --reload
 ```bash
 cd frontend
 npm install
-set VITE_API_BASE_URL=http://localhost:8000
+export VITE_API_BASE_URL=http://localhost:8000
 npm run dev
 ```

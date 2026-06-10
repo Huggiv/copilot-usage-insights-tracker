@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_db
+from .database import Base, DB_PATH, engine, get_db
 from .migrations import apply_migrations
 from .models import SessionRecord
 from .schemas import SessionIn, SessionOut, SummaryOut, UserItem
@@ -140,7 +140,7 @@ METRICS = {
     "query_latency_ms_count": 0,
 }
 
-Path(os.getenv("DB_PATH", "/app/data/copilot_usage.db")).parent.mkdir(parents=True, exist_ok=True)
+Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 Base.metadata.create_all(bind=engine)
 apply_migrations(engine)
 
