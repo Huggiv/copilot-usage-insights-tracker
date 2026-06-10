@@ -78,6 +78,11 @@ Write endpoints protected by auth and limits:
 - `POST /api/v1/model-usage`
 - `POST /api/v1/model-usage/batch`
 
+Batch ingestion behavior:
+
+- Batch endpoints are idempotent by logical key and update existing rows when replayed.
+- Batch upserts run in a single transaction per request.
+
 ## Data Normalization and Migrations
 
 - Session timestamp fields (`started_at`, `ended_at`) are normalized to UTC ISO format (`YYYY-MM-DDTHH:MM:SSZ`) on ingest.

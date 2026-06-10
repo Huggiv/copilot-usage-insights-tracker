@@ -261,6 +261,40 @@ def _apply_upsert(existing: SessionRecord | None, payload: SessionIn, db: Sessio
     return existing
 
 
+def _model_usage_key(
+    *,
+    date: str,
+    user_id: str,
+    model: str,
+    session_id: str | None,
+) -> tuple[str, str, str, str]:
+    return (date, user_id, model, session_id or "")
+
+
+def _apply_model_usage_upsert(
+    existing: ModelUsageRecord | None,
+    payload: ModelUsageIn,
+    db: Session,
+) -> ModelUsageRecord:
+    if existing is None:
+        existing = ModelUsageRecord(
+            session_id=payload.session_id,
+            date=payload.date,
+            user_id=payload.user_id,
+            model=payload.model,
+        )
+        db.add(existing)
+    else:
+        existing.session_id = payload.session_id
+
+    existing.nano_aiu = payload.nano_aiu
+    existing.input_tokens = payload.input_tokens
+    existing.output_tokens = payload.output_tokens
+    existing.session_count = payload.session_count
+    existing.request_count = payload.request_count
+    return existing
+
+
 @app.post("/api/v1/sessions/batch", response_model=list[SessionOut])
 def upsert_sessions_batch(
     payload: list[SessionIn],
@@ -449,22 +483,7 @@ def upsert_model_usage(
         query = query.where(ModelUsageRecord.session_id.is_(None))
 
     existing = db.scalar(query)
-    if existing is None:
-        existing = ModelUsageRecord(
-            session_id=payload.session_id,
-            date=payload.date,
-            user_id=payload.user_id,
-            model=payload.model,
-        )
-        db.add(existing)
-    else:
-        existing.session_id = payload.session_id
-
-    existing.nano_aiu = payload.nano_aiu
-    existing.input_tokens = payload.input_tokens
-    existing.output_tokens = payload.output_tokens
-    existing.session_count = payload.session_count
-    existing.request_count = payload.request_count
+    existing = _apply_model_usage_upsert(existing, payload, db)
     db.commit()
     db.refresh(existing)
     return ModelUsageOut(
@@ -487,15 +506,58 @@ def upsert_model_usage_batch(
     db: Session = Depends(get_db),
 ) -> list[ModelUsageOut]:
     """Upsert model-level usage rows in batch (max 2000)."""
+    if not payload:
+        return []
+
     if len(payload) > 2000:
         raise HTTPException(status_code=422, detail="Batch size must not exceed 2000 model-usage rows.")
 
-    output: list[ModelUsageOut] = []
+    existing_rows = list(
+        db.scalars(
+            select(ModelUsageRecord).where(
+                ModelUsageRecord.date.in_({item.date for item in payload}),
+                ModelUsageRecord.user_id.in_({item.user_id for item in payload}),
+                ModelUsageRecord.model.in_({item.model for item in payload}),
+            )
+        )
+    )
+    existing_map: dict[tuple[str, str, str, str], ModelUsageRecord] = {
+        _model_usage_key(
+            date=row.date,
+            user_id=row.user_id,
+            model=row.model,
+            session_id=row.session_id,
+        ): row
+        for row in existing_rows
+    }
+
+    rows: list[ModelUsageRecord] = []
     for item in payload:
-        row = upsert_model_usage(item, None, db)
-        output.append(row)
+        key = _model_usage_key(
+            date=item.date,
+            user_id=item.user_id,
+            model=item.model,
+            session_id=item.session_id,
+        )
+        row = _apply_model_usage_upsert(existing_map.get(key), item, db)
+        existing_map[key] = row
+        rows.append(row)
+
     db.commit()
-    return output
+    return [
+        ModelUsageOut(
+            date=row.date,
+            user_id=row.user_id,
+            model=row.model,
+            nano_aiu=row.nano_aiu,
+            input_tokens=row.input_tokens,
+            output_tokens=row.output_tokens,
+            session_count=row.session_count,
+            request_count=row.request_count,
+            ai_credits=round(row.nano_aiu / AI_CREDITS_DIVISOR, 4),
+        )
+        for row in rows
+    ]
 
 
 @app.get("/api/v1/model-usage", response_model=list[ModelUsageOut])
