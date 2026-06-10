@@ -1,5 +1,6 @@
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import NoSuchTableError
 
 
 def _ensure_migrations_table(engine: Engine) -> None:
@@ -36,7 +37,10 @@ def _mark_applied(engine: Engine, version: int, name: str) -> None:
 
 def _column_exists(engine: Engine, table_name: str, column_name: str) -> bool:
     inspector = inspect(engine)
-    columns = inspector.get_columns(table_name)
+    try:
+        columns = inspector.get_columns(table_name)
+    except NoSuchTableError:
+        return False
     return any(column.get("name") == column_name for column in columns)
 
 

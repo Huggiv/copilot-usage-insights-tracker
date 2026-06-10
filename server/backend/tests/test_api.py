@@ -20,8 +20,8 @@ def _fresh_client(monkeypatch, tmp_path, auth_required=True):
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
 
     # Reimport modules so globals (engine/config/app) are rebuilt with fresh env vars.
-    for module_name in ["app.main", "app.database", "app.migrations"]:
-        if module_name in sys.modules:
+    for module_name in list(sys.modules.keys()):
+        if module_name == "app" or module_name.startswith("app."):
             del sys.modules[module_name]
 
     main_mod = importlib.import_module("app.main")
