@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: copilot-usage-backend
+    environment:
+      - DB_PATH=/app/data/copilot_usage.db
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: copilot-usage-frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"

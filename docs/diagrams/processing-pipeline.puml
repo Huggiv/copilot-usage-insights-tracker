@@ -1,0 +1,39 @@
+@startuml
+skinparam shadowing true
+skinparam roundcorner 12
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+
+top to bottom direction
+
+skinparam rectangle {
+  BorderColor #666666
+}
+
+rectangle "Activation Events\ncommands, view, chat participant, LM tools" as Start #dae8fc
+rectangle "Session Discovery\ngetWorkspaceStorageRoots\nfindSessionsForDays\nresolve titles" as Discover #dae8fc
+rectangle "Source Selection\nparseCopilotSessionFile chooses\ndebug log, sibling chat session, or fallback" as Select #d5e8d4
+rectangle "Normalization\nnormalizeEntry / normalizeParsedEntries\nparseEntries" as Normalize #d5e8d4
+rectangle "Enrichment\nsubagent roll-up\nprompt composition\nspend summary" as Enrich #d5e8d4
+rectangle "SessionGraph Projection\nserialize, tool usage, commands, risk flags" as Graph #d5e8d4
+rectangle "Outputs\nTree view, quick pick, @usage, LM tools" as Output #fff2cc
+
+Start --> Discover
+Discover --> Select
+Select --> Normalize
+Normalize --> Enrich
+Enrich --> Graph
+Graph --> Output
+
+note right of Select
+Debug logs are preferred when
+usable because they contain
+billing, timing, and prompt metadata.
+Chat sessions backfill transcript data.
+end note
+
+note right of Output
+The same parsed session model drives
+both the UI and the chat-facing tools.
+end note
+@enduml

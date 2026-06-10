@@ -1,0 +1,55 @@
+@startuml
+skinparam shadowing true
+skinparam roundcorner 12
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+left to right direction
+
+package "Extension Shell" #dae8fc {
+  rectangle "activate()\n[extension.ts]" as Activate
+  rectangle "UsageTreeProvider\n[extension.ts]" as TreeProvider
+  rectangle "Session scanning + title resolution\n[extension.ts]" as Discovery
+}
+
+package "Parsing Core" #d5e8d4 {
+  interface "SessionSummary" as ISession
+  rectangle "parseCopilotSessionFile()" as ParseSession
+  rectangle "parseDebugLog()" as ParseDebug
+  rectangle "parseChatSessionLog()" as ParseChat
+  rectangle "parseEntries()" as ParseEntries
+  rectangle "Prompt composition + billing helpers" as PromptHelpers
+}
+
+package "Chat Analysis" #ffe6cc {
+  rectangle "registerChatParticipant()\n[participant.ts]" as Participant
+  rectangle "SearchSessionsTool" as SearchTool
+  rectangle "GetGraphTool" as GraphTool
+  rectangle "SessionGraph\n[graph.ts]" as SessionGraph
+}
+
+package "Validation" #f8cecc {
+  rectangle "parser.test.js" as ParserTests
+  database "sample-debug.jsonl\nsample-chat-session.jsonl" as Fixtures
+}
+
+Activate --> TreeProvider : creates tree view
+Activate --> Discovery : auto-loads / quick-picks sessions
+Activate --> ParseSession : parses selected file
+Activate --> Participant : registers @usage
+Discovery --> ParseSession : mainJsonl path
+ParseSession --> ParseDebug : debug-log path
+ParseSession --> ParseChat : chatSessions fallback
+ParseDebug --> ParseEntries
+ParseChat --> ParseEntries
+ParseDebug --> PromptHelpers
+ParseEntries --> ISession
+PromptHelpers --> ISession
+TreeProvider --> ISession : renders metrics
+Participant --> SessionGraph : wraps current SessionSummary
+SearchTool --> Discovery : sessionFinder()
+GraphTool --> ParseSession : lazy-load by session id
+GraphTool --> SessionGraph : serialize session graph
+ParserTests --> ParseEntries : unit coverage
+ParserTests --> ParseChat : chat session coverage
+ParserTests --> Fixtures : sample inputs
+@enduml

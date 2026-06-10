@@ -1,0 +1,41 @@
+@startuml
+skinparam shadowing true
+skinparam roundcorner 12
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+left to right direction
+
+skinparam rectangle {
+  BackgroundColor #dae8fc
+  BorderColor #6c8ebf
+}
+
+actor "VS Code User" as User
+rectangle "Copilot Usage\nVS Code Extension" as Extension #dae8fc {
+  rectangle "Activity Bar Tree View\nUsageTreeProvider" as TreeView #d5e8d4
+  rectangle "Session Discovery + Parsing\nextension.ts + parser.ts" as ParserLayer #d5e8d4
+  rectangle "Chat Participant + LM Tools\nparticipant.ts + graph.ts" as ChatLayer #d5e8d4
+}
+
+rectangle "VS Code workspaceStorage\nGitHub.copilot-chat/debug-logs\nchatSessions JSONL" as LocalLogs #fff2cc
+rectangle "VS Code Extension Host\nCommands, File Watchers, Settings" as Host #fff2cc
+rectangle "VS Code Language Model Runtime\nChat participant + tool invocations" as LMRuntime #fff2cc
+rectangle "GitHub Billing Docs" as BillingDocs #fff2cc
+
+User --> TreeView : opens Copilot Usage view
+User --> Host : runs analyze / pick / refresh commands
+Host --> ParserLayer : locate latest session
+ParserLayer --> LocalLogs : read debug logs and chat sessions
+ParserLayer --> TreeView : publish SessionSummary
+ParserLayer --> ChatLayer : set current graph
+TreeView --> BillingDocs : open AIC docs link
+User --> ChatLayer : ask @usage questions
+ChatLayer --> LMRuntime : register tools and send requests
+LMRuntime --> ChatLayer : usage-search-sessions\nusage-get-graph results
+
+note right of LocalLogs
+Local files only.
+No upload is performed
+by the extension itself.
+end note
+@enduml
