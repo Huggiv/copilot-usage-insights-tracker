@@ -40,9 +40,11 @@ function buildLinePath(pts) {
   return pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' ');
 }
 
-export function CreditsMeter({ summary, selectedDays }) {
+export function CreditsMeter({ summary, selectedDays, selectedPeriod }) {
   const dayCount = Number(selectedDays) || 30;
-  const creditsTarget = Math.max((100000 * dayCount) / 30, 1);
+  const creditsTarget = selectedPeriod === 'current_month'
+    ? 100000
+    : Math.max((100000 * dayCount) / 30, 1);
   const creditsUsed = Number(summary?.total_ai_credits) || 0;
   const meterPct = Math.min((creditsUsed / creditsTarget) * 100, 100);
 
