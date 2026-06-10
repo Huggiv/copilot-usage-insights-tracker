@@ -221,8 +221,8 @@ copilot_usage/
 |       |-- quality-playbook.agent.md
 |       `-- specification.agent.md
 |-- images/
-|   |-- copilot-chat-usage-icon-128.png
-|   |-- copilot_usage_icon_128.png
+|   |-- copilot_usage_dashboard.gif
+|   |-- copilot_usage_insights_icon_128.png
 |   `-- usage-screenshot.png
 |-- src/
 |   |-- extension.ts

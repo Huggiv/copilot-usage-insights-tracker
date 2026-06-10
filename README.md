@@ -8,6 +8,7 @@ GitHub documents Copilot usage in AI credits, where "1 AI credit = $0.01 USD" in
 
 ![GitHub Copilot Chat Usage showing token, cost, and tool-call insights](images/usage-screenshot.png)
 
+
 ## Features
 
 - See AIC, token, cache, model-turn, and duration totals for each message.
@@ -42,9 +43,19 @@ When you use the `@usage` chat participant, the extension sends the selected ses
 - `Copilot Usage: Pick Session to Analyze`
 - `Refresh`
 
+
+## Server Dashboard
+
+The repository also includes a server-side collector and web dashboard.
+
+- Server stack overview and API docs: [server/README.md](https://github.com/Huggiv/copilot-usage-insights-tracker/blob/main/server/README.md)
+- Project summary: [docs/project-summary.md](https://github.com/Huggiv/copilot-usage-insights-tracker/blob/main/docs/project-summary.md)
+
+![Copilot Usage Dashboard GIF](https://github.com/Huggiv/copilot-usage-insights-tracker/raw/main/images/copilot_usage_dashboard.gif)
+
 ## Development
 
-For local development, building, testing, and extension publishing, see [Developer.md](Developer.md).
+For local development, building, testing, and extension publishing, see [Developer.md](https://github.com/Huggiv/copilot-usage-insights-tracker/blob/main/Developer.md).
 
 ## Notes
 
