@@ -51,6 +51,18 @@ npm run compile
 npm test
 ```
 
+## Backend API Tests
+
+Run backend checks locally from `server/backend`:
+
+```bash
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m compileall app
+pytest -q
+```
+
+CI now enforces backend checks through `.github/workflows/backend-ci.yml` for backend-related changes.
+
 ## Local VS Code Development Setup
 
 `vsce` is a local dev dependency, so packaging fails if dependencies are not installed.
