@@ -3,7 +3,7 @@
   "publisher": "Huggiv",
   "displayName": "Copilot Usage Insights Tracker",
   "description": "Analyze token usage and costs from GitHub Copilot Chat debug logs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT",
   "icon": "images/copilot_usage_insights_icon_128.png",
   "homepage": "https://github.com/Huggiv/copilot-usage-insights-tracker",
