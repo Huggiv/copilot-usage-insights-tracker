@@ -109,10 +109,13 @@ export interface UserMessageSummary {
     toolsFile?: string;
 }
 
+/** All recognised usage source types. */
+export type UsageSourceType = 'debugLog' | 'chatSession' | 'copilotCli' | 'copilotAgent';
+
 export interface SessionSummary {
     sessionId: string;
     title?: string;
-    sourceType?: 'debugLog' | 'chatSession';
+    sourceType?: UsageSourceType;
     userMessages: UserMessageSummary[];
     totalInputTokens: number;
     totalOutputTokens: number;
@@ -128,7 +131,7 @@ export interface SessionSummary {
 export interface ParsedSessionFile {
     summary: SessionSummary;
     sourceFile: string;
-    sourceType: 'debugLog' | 'chatSession';
+    sourceType: UsageSourceType;
 }
 
 export interface ToolDefinitionSize {
@@ -1023,8 +1026,37 @@ export function parseCopilotSessionFile(filePath: string): ParsedSessionFile | u
 }
 
 export function parseCopilotSessionLog(filePath: string): SessionSummary | undefined {
-    return parseCopilotSessionFile(filePath)?.summary;
+    return parseUsageSessionFile(filePath)?.summary;
 }
+
+/**
+ * Source-routing entry point.  Selects the correct parser based on the optional
+ * `sourceType` hint, then falls back to the existing VS Code routing logic.
+ *
+ * Use this for all new call sites; keep `parseCopilotSessionFile` for backward
+ * compatibility with existing callers that handle VS Code sources only.
+ */
+export function parseUsageSessionFile(
+    filePath: string,
+    sourceType?: UsageSourceType
+): ParsedSessionFile | undefined {
+    if (sourceType === 'copilotCli') {
+        const { parseCopilotCliLog } = require('./parser/copilotCliParser');
+        const summary: SessionSummary | undefined = parseCopilotCliLog(filePath);
+        return summary ? { summary, sourceFile: filePath, sourceType: 'copilotCli' } : undefined;
+    }
+    if (sourceType === 'copilotAgent') {
+        const { parseCopilotAgentLog } = require('./parser/copilotAgentParser');
+        const summary: SessionSummary | undefined = parseCopilotAgentLog(filePath);
+        return summary ? { summary, sourceFile: filePath, sourceType: 'copilotAgent' } : undefined;
+    }
+    // Default: existing VS Code debug-log / chatSession routing
+    return parseCopilotSessionFile(filePath);
+}
+
+// Re-export sub-parser functions for direct use by consumers (e.g. tests)
+export { parseCopilotCliLog } from './parser/copilotCliParser';
+export { parseCopilotAgentLog } from './parser/copilotAgentParser';
 
 /** Title-generation debugNames that should be filtered from user-visible turns */
 const TITLE_GENERATION_NAMES = new Set(['title', 'generate_title', 'generate title', 'generateTitle', 'title-generation']);
