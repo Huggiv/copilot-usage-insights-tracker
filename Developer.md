@@ -51,6 +51,39 @@ npm run compile
 npm test
 ```
 
+## Architecture
+
+### Multi-Source Parser Design
+
+The extension supports ingesting usage data from four sources via a modular parser architecture:
+
+**Source Types:**
+- `debugLog` — VS Code Copilot Chat debug logs (default, built-in discovery)
+- `chatSession` — VS Code Copilot Chat `.jsonl` session files (fallback)
+- `copilotCli` — Local Copilot CLI usage logs (JSONL or JSON array format)
+- `copilotAgent` — Local Copilot Agent run logs (JSONL with typed records)
+
+**Parser Modules:**
+- `src/parser.ts` — Main routing and type definitions
+- `src/parser/normalizers.ts` — Shared coercion helpers for token and credit conversion
+- `src/parser/copilotCliParser.ts` — CLI log parsing (228 lines)
+- `src/parser/copilotAgentParser.ts` — Agent log parsing with tool attachment (352 lines)
+
+**Discovery & Configuration:**
+- New config keys: `copilotUsageTracker.cliSearchRoots` and `copilotUsageTracker.agentSearchRoots`
+- Automatic sub-directory discovery: `copilot-cli`, `gh-copilot` (CLI); `copilot-agent`, `agent-runs` (Agent)
+- Source-qualified session de-duplication via `candidateMergeKey()` to prevent cross-source ID collisions
+
+**Surface Integration:**
+- Tree view displays `[CLI]` and `[Agent]` badges on session nodes
+- Chat participant shows source tags in search results
+- Graph serialization includes `sourceType` in stats
+- Server reporting includes `source_category` field (vscode, copilot_cli, copilot_agent)
+
+**Testing:**
+- 16 new parser tests covering CLI and Agent parsing, malformed-line resilience, and source routing
+- Fixture files with real-world test cases: `test/fixtures/sample-copilot-cli.jsonl` and `test/fixtures/sample-copilot-agent.jsonl`
+
 ## Backend API Tests
 
 Run backend checks locally from `server/backend`:
@@ -132,3 +165,44 @@ The workflow runs on `v*.*.*` tags and checks that the tag version matches `pack
 - **`code` command not found**: The VS Code CLI is not in your PATH. Install it manually or add it to your PATH.
 - **`vsce` package errors**: Ensure dependencies are installed (`npm install`) and you're using a current LTS Node.js version.
 - **Docker services fail to start**: Check that Docker daemon is running and ports 8000 and 5173 are available.
+- **CLI/Agent logs not appearing**: Verify that `copilotUsageTracker.cliSearchRoots` or `copilotUsageTracker.agentSearchRoots` are configured correctly in VS Code settings. The extension scans for `copilot-cli`, `gh-copilot`, `copilot-agent`, and `agent-runs` subdirectories within configured roots.
+
+---
+
+## Adding a New Usage Source
+
+To support a new usage source format:
+
+1. **Create a parser module** in `src/parser/newSourceParser.ts`:
+   - Export a function `parseNewSourceLog(filePath: string): SessionSummary | undefined`
+   - Use `normalizers.ts` helpers for field coercion and credit conversion
+   - Return `undefined` if the file cannot be parsed or contains no valid records
+
+2. **Add the source type** to `UsageSourceType` union in `src/parser.ts`:
+   ```typescript
+   export type UsageSourceType = 'debugLog' | 'chatSession' | 'copilotCli' | 'copilotAgent' | 'newSource';
+   ```
+
+3. **Extend the router** in `parseUsageSessionFile()` to handle your source type:
+   ```typescript
+   case 'newSource':
+       return (require('./parser/newSourceParser').parseNewSourceLog as any)(filePath);
+   ```
+
+4. **Add discovery helpers** in `src/extension.ts`:
+   - Implement `collectNewSourceLogDirs()` to find source-specific directories
+   - Call it from `findSessionsForDays()` and merge results with `mergeSessionCandidate()`
+
+5. **Add configuration keys** in `package.json` under `contributes.configuration.properties`:
+   ```json
+   "copilotUsageTracker.newSourceSearchRoots": {
+     "type": "array",
+     "items": {"type": "string"},
+     "default": [],
+     "description": "Directories to scan for new source logs..."
+   }
+   ```
+
+6. **Add tests** in `test/parser.test.js` with fixture files in `test/fixtures/`
+
+7. **Update the README** with the new source in the "Supported Usage Sources" table
