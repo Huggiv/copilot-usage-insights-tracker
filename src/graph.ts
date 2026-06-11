@@ -80,6 +80,8 @@ export interface CommandEntry {
 export interface SessionStats {
     sessionId: string;
     title?: string;
+    /** Originating source type. Undefined for sessions parsed before multi-source support. */
+    sourceType?: string;
     totalCostAic: number;
     totalInputTokens: number;
     totalOutputTokens: number;
@@ -136,6 +138,7 @@ export class SessionGraph {
             this._stats = {
                 sessionId: s.sessionId,
                 title: s.title,
+                sourceType: s.sourceType,
                 totalCostAic: totalCost,
                 totalInputTokens: s.totalInputTokens,
                 totalOutputTokens: s.totalOutputTokens,
@@ -222,6 +225,9 @@ export class SessionGraph {
 
         const s = this.stats;
         lines.push(`# Session: ${s.title || s.sessionId}`);
+        if (s.sourceType) {
+            lines.push(`Source: ${s.sourceType}`);
+        }
         lines.push(`Cost: ${s.totalCostAic.toFixed(2)} AIC | Tokens: ${formatNumber(s.totalTokens)} (in:${formatNumber(s.totalInputTokens)} out:${formatNumber(s.totalOutputTokens)} cache:${formatNumber(s.totalCachedTokens)})`);
         lines.push(`Messages: ${s.messageCount} | Turns: ${s.modelTurnCount} | Tool Calls: ${s.toolCallCount} | LLM Time: ${formatDuration(s.totalDurationMs)}`);
         lines.push(`Cache Hit: ${(s.cacheHitRatio * 100).toFixed(1)}% | Avg Cost/Message: ${s.avgCostPerMessage.toFixed(1)} AIC`);

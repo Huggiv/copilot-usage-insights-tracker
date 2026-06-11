@@ -7,7 +7,7 @@
  */
 
 import * as vscode from 'vscode';
-import { SessionSummary, parseCopilotSessionLog } from './parser';
+import { SessionSummary, UsageSourceType, parseCopilotSessionLog } from './parser';
 import { SessionGraph } from './graph';
 
 // ---- Shared state ----
@@ -15,7 +15,7 @@ import { SessionGraph } from './graph';
 let currentGraph: SessionGraph | undefined;
 const loadedGraphs = new Map<string, SessionGraph>();
 
-type SessionFinder = (daysBack?: number) => { id: string; mainJsonl: string; modifiedTime: number }[];
+type SessionFinder = (daysBack?: number) => { id: string; mainJsonl: string; modifiedTime: number; sourceType?: UsageSourceType }[];
 type TitleResolver = (id: string) => string | undefined;
 
 let sessionFinder: SessionFinder = () => [];
@@ -76,7 +76,10 @@ class SearchSessionsTool implements vscode.LanguageModelTool<SearchInput> {
             const title = titleResolver(s.id);
             const date = new Date(s.modifiedTime).toLocaleString();
             const isCurrent = currentGraph?.stats.sessionId === s.id;
-            return `${isCurrent ? '→ [LOADED] ' : '  '}${title || s.id.slice(0, 8) + '...'} | ${date} | id:${s.id}`;
+            const sourceTag = s.sourceType === 'copilotCli'   ? ' [CLI]'
+                            : s.sourceType === 'copilotAgent' ? ' [Agent]'
+                            : '';
+            return `${isCurrent ? '→ [LOADED] ' : '  '}${title || s.id.slice(0, 8) + '...'}${sourceTag} | ${date} | id:${s.id}`;
         });
 
         const currentLabel = currentGraph

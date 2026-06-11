@@ -30,6 +30,8 @@ interface SessionPayload {
     raw_payload: {
         source: string;
         source_type: string | null;
+        /** Reports originating source category: 'vscode' | 'copilot_cli' | 'copilot_agent' */
+        source_category: string;
         message_count: number;
     };
 }
@@ -125,6 +127,12 @@ function postJson(baseUrl: string, urlPath: string, body: object): Promise<boole
     });
 }
 
+function sourceTypeToCategory(sourceType: string | undefined): string {
+    if (sourceType === 'copilotCli')   { return 'copilot_cli'; }
+    if (sourceType === 'copilotAgent') { return 'copilot_agent'; }
+    return 'vscode';
+}
+
 function buildSessionPayload(summary: SessionSummary, userId: string): SessionPayload {
     const firstMsg = summary.userMessages[0];
     const lastMsg = summary.userMessages[summary.userMessages.length - 1];
@@ -154,6 +162,7 @@ function buildSessionPayload(summary: SessionSummary, userId: string): SessionPa
         raw_payload: {
             source: 'copilot_usage_extension',
             source_type: summary.sourceType ?? null,
+            source_category: sourceTypeToCategory(summary.sourceType),
             message_count: summary.userMessages.length,
         },
     };
