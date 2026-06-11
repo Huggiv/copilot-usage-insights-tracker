@@ -805,6 +805,17 @@ function getChatRequestInputTokens(request: any): number {
     )) || 0;
 }
 
+function getChatRequestCachedTokens(request: any): number {
+    return toNumber(firstDefined(
+        request.cachedTokens,
+        request.cached_tokens,
+        request.result?.metadata?.cachedTokens,
+        request.result?.metadata?.cached_tokens,
+        request.result?.metadata?.usage?.cachedTokens,
+        request.result?.metadata?.usage?.cached_tokens
+    )) || 0;
+}
+
 export function parseCreditDetailsNanoAiu(detailsValue: unknown): number {
     const details = asString(detailsValue, '');
     const match = details.match(/(?:^|[^\d.])(\d+(?:\.\d+)?)\s+(?:ai\s+)?credits?\b/i);
@@ -922,6 +933,7 @@ export function parseChatSessionLog(filePath: string): SessionSummary | undefine
         const inputTokens = getChatRequestInputTokens(request);
         const outputTokens = getChatRequestOutputTokens(request);
         const nanoAiu = getChatRequestNanoAiu(request);
+        const cachedTokens = getChatRequestCachedTokens(request);
 
         entries.push({
             ts: turnTimestamp,
@@ -937,7 +949,7 @@ export function parseChatSessionLog(filePath: string): SessionSummary | undefine
                 debugName: asString(request.agent?.name, 'chat'),
                 inputTokens,
                 outputTokens,
-                cachedTokens: 0,
+                cachedTokens: cachedTokens,
                 copilotUsageNanoAiu: nanoAiu,
                 responseId: request.responseId,
             },
