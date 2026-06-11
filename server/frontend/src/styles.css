@@ -313,8 +313,17 @@ h1 {
 }
 
 .axis-line {
-  stroke: #b4baa8;
+  stroke: var(--line);
   stroke-width: 1;
+}
+
+.stacked-cost-bar rect {
+  opacity: 0.72;
+  transition: opacity 160ms ease;
+}
+
+.stacked-cost-bar:hover rect {
+  opacity: 0.95;
 }
 
 .series-line {
@@ -351,6 +360,11 @@ h1 {
   transform: translateY(-50%);
 }
 
+.stack-tooltip {
+  min-width: 230px;
+  white-space: normal;
+}
+
 .chart-tooltip-date {
   font-weight: 700;
   font-size: 11px;
@@ -361,6 +375,62 @@ h1 {
 .chart-tooltip-cost {
   font-weight: 700;
   font-size: 13px;
+}
+
+.stack-tooltip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 7px;
+}
+
+.stack-tooltip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.stack-tooltip-row span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stack-tooltip-row i,
+.stack-legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.stack-tooltip-row strong {
+  font-size: 12px;
+}
+
+.stack-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.stack-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chart-footer {

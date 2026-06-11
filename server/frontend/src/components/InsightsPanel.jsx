@@ -4,6 +4,16 @@ import { formatCredits, formatNumber, formatTokenCompact } from '../utils/format
 const SVG_W = 720;
 const SVG_H = 200;
 const PAD = 36;
+const USER_STACK_COLORS = [
+  '#3157d5',
+  '#0f9f8f',
+  '#f97316',
+  '#8b5cf6',
+  '#ef4444',
+  '#14b8a6',
+  '#f59e0b',
+  '#64748b',
+];
 
 function toCostUsd(nanoAiu) {
   return (Number(nanoAiu) || 0) / 1e11;
@@ -40,6 +50,44 @@ function buildCostSeries(sessions, modelUsage) {
   return buildSessionSeries(sessions);
 }
 
+function buildUserCostStacks(sessions, modelUsage) {
+  const buckets = new Map();
+  const sourceRows = modelUsage?.length
+    ? modelUsage.map((row) => ({
+      date: row.date,
+      user: row.user_id || 'Unknown',
+      cost: toCostUsd(row.nano_aiu),
+    }))
+    : (sessions || []).map((session) => ({
+      date: (session.started_at || '').slice(0, 10),
+      user: session.user_id || 'Unknown',
+      cost: toCostUsd(session.total_nano_aiu),
+    }));
+
+  for (const row of sourceRows) {
+    if (!row.date || row.cost <= 0) {
+      continue;
+    }
+
+    const bucket = buckets.get(row.date) || new Map();
+    bucket.set(row.user, (bucket.get(row.user) || 0) + row.cost);
+    buckets.set(row.date, bucket);
+  }
+
+  return [...buckets.entries()]
+    .map(([date, userCosts]) => {
+      const segments = [...userCosts.entries()]
+        .map(([user, cost]) => ({ user, cost }))
+        .sort((a, b) => a.user.localeCompare(b.user));
+      return {
+        date,
+        total: segments.reduce((sum, segment) => sum + segment.cost, 0),
+        segments,
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 function buildModelBars(modelUsage) {
   const grouped = new Map();
   for (const row of modelUsage || []) {
@@ -69,14 +117,17 @@ function buildModelBars(modelUsage) {
 function computePoints(series) {
   if (series.length === 0) return [];
   const maxY = Math.max(...series.map((p) => p.cost), 0.000001);
-  const minY = Math.min(...series.map((p) => p.cost), 0);
   const xSpan = Math.max(series.length - 1, 1);
-  const ySpan = Math.max(maxY - minY, 0.000001);
   return series.map((p, i) => ({
     ...p,
     x: PAD + (i / xSpan) * (SVG_W - 2 * PAD),
-    y: SVG_H - PAD - ((p.cost - minY) / ySpan) * (SVG_H - 2 * PAD),
+    y: SVG_H - PAD - (p.cost / maxY) * (SVG_H - 2 * PAD),
   }));
+}
+
+function colorForUser(user, users) {
+  const userIndex = users.indexOf(user);
+  return USER_STACK_COLORS[Math.max(userIndex, 0) % USER_STACK_COLORS.length];
 }
 
 function buildLinePath(pts) {
@@ -116,9 +167,19 @@ export function CostChart({ sessions, modelUsage }) {
   const [tooltip, setTooltip] = useState(null);
   const svgRef = useRef(null);
 
-  const series = buildCostSeries(sessions, modelUsage);
+  const userStacks = buildUserCostStacks(sessions, modelUsage);
+  const stackUsers = [...new Set(userStacks.flatMap((stack) => stack.segments.map((segment) => segment.user)))].sort();
+  const series = userStacks.length
+    ? userStacks.map((stack) => ({ date: stack.date, cost: stack.total }))
+    : buildCostSeries(sessions, modelUsage);
   const pts = computePoints(series);
   const linePath = buildLinePath(pts);
+  const maxY = Math.max(...series.map((p) => p.cost), 0.000001);
+  const chartHeight = SVG_H - 2 * PAD;
+  const baselineY = SVG_H - PAD;
+  const barWidth = Math.min(34, Math.max(10, ((SVG_W - 2 * PAD) / Math.max(series.length, 1)) * 0.48));
+
+  const stackByDate = new Map(userStacks.map((stack) => [stack.date, stack]));
 
   const handleMouseMove = useCallback(
     (e) => {
@@ -142,10 +203,21 @@ export function CostChart({ sessions, modelUsage }) {
 
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
 
+  function showStackTooltip(stack, point) {
+    setTooltip({
+      type: 'stack',
+      date: stack.date,
+      cost: stack.total,
+      segments: stack.segments,
+      pctX: point.x / SVG_W,
+      pctY: Math.max(point.y, PAD) / SVG_H,
+    });
+  }
+
   return (
     <article className="insight-card insight-chart-card">
       <h3>Cost Time Series</h3>
-      <p className="insight-subtitle">Daily total cost in USD — hover data points for details</p>
+      <p className="insight-subtitle">Daily total cost with user-level stacked usage bars</p>
       {series.length === 0 ? (
         <p className="insight-empty">No session cost data in the selected period.</p>
       ) : (
@@ -159,8 +231,47 @@ export function CostChart({ sessions, modelUsage }) {
             onMouseLeave={handleMouseLeave}
           >
             <line x1={PAD} y1={SVG_H - PAD} x2={SVG_W - PAD} y2={SVG_H - PAD} className="axis-line" />
+            {pts.map((point) => {
+              const stack = stackByDate.get(point.date);
+              if (!stack) {
+                return null;
+              }
+
+              let runningCost = 0;
+              return (
+                <g
+                  key={`stack-${point.date}`}
+                  className="stacked-cost-bar"
+                  onMouseMove={(e) => {
+                    e.stopPropagation();
+                    showStackTooltip(stack, point);
+                  }}
+                  onMouseEnter={(e) => {
+                    e.stopPropagation();
+                    showStackTooltip(stack, point);
+                  }}
+                >
+                  {stack.segments.map((segment) => {
+                    const segmentHeight = Math.max((segment.cost / maxY) * chartHeight, 1);
+                    runningCost += segment.cost;
+                    const segmentTop = baselineY - (runningCost / maxY) * chartHeight;
+                    return (
+                      <rect
+                        key={`${point.date}-${segment.user}`}
+                        x={point.x - barWidth / 2}
+                        y={segmentTop}
+                        width={barWidth}
+                        height={segmentHeight}
+                        rx="3"
+                        fill={colorForUser(segment.user, stackUsers)}
+                      />
+                    );
+                  })}
+                </g>
+              );
+            })}
             <path d={linePath} className="series-line" />
-            {tooltip && (
+            {tooltip && tooltip.type !== 'stack' && (
               <>
                 <line
                   x1={tooltip.svgX}
@@ -176,14 +287,38 @@ export function CostChart({ sessions, modelUsage }) {
           </svg>
           {tooltip && (
             <div
-              className="chart-tooltip"
+              className={`chart-tooltip ${tooltip.type === 'stack' ? 'stack-tooltip' : ''}`}
               style={{
-                left: `calc(${tooltip.pctX * 100}% + ${tooltip.pctX > 0.7 ? '-130px' : '12px'})`,
+                left: `calc(${tooltip.pctX * 100}% + ${tooltip.pctX > 0.7 ? '-190px' : '12px'})`,
                 top: `calc(${tooltip.pctY * 100}% - 16px)`,
               }}
             >
               <div className="chart-tooltip-date">{tooltip.date}</div>
               <div className="chart-tooltip-cost">${tooltip.cost.toFixed(6)}</div>
+              {tooltip.type === 'stack' && (
+                <div className="stack-tooltip-list">
+                  {tooltip.segments.map((segment) => (
+                    <div className="stack-tooltip-row" key={segment.user}>
+                      <span>
+                        <i style={{ background: colorForUser(segment.user, stackUsers) }} />
+                        {segment.user}
+                      </span>
+                      <strong>${segment.cost.toFixed(6)}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {stackUsers.length > 0 && (
+            <div className="stack-legend">
+              {stackUsers.slice(0, 6).map((user) => (
+                <span key={user} title={user}>
+                  <i style={{ background: colorForUser(user, stackUsers) }} />
+                  {user}
+                </span>
+              ))}
+              {stackUsers.length > 6 && <span>+{stackUsers.length - 6} more</span>}
             </div>
           )}
           <div className="chart-footer">
