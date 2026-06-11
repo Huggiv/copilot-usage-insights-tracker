@@ -20,6 +20,7 @@ import {
 } from './parser';
 import { setCurrentGraph, registerChatParticipant } from './participant';
 import { isServerReportingEnabled, reportSessionToServer, reportSessionsBatchToServer } from './reporter';
+import { fetchCurrentMonthGitHubCreditUsage } from './githubBilling';
 
 /**
  * Title priority levels (higher = better):
@@ -96,6 +97,20 @@ interface SpendRequest {
 interface SpendModelAccumulator {
     modelBuckets: Map<string, SpendModelBucket>;
     modelSessionSets: Map<string, Set<string>>;
+}
+
+/** Where the AI Credit Usage Meter sourced its current-month figure. */
+type CreditMeterSource = 'github' | 'local';
+
+interface CreditMeter {
+    /** Human-readable current calendar month, e.g. "June 2026". */
+    monthLabel: string;
+    /** Current-month AI credit usage, in nano-AIU. */
+    usedNanoAiu: number;
+    /** Configured monthly budget, in whole AIC. */
+    limitAic: number;
+    source: CreditMeterSource;
+    generatedAt: number;
 }
 
 function pathExists(candidate: string | undefined): candidate is string {
@@ -702,6 +717,113 @@ let debugLogDirsCache: { expiresAt: number; dirs: string[] } | undefined;
 let chatSessionDirsCache: { expiresAt: number; dirs: string[] } | undefined;
 let todaySpendSummaryCache: { expiresAt: number; summary: SpendSummary } | undefined;
 let fullSpendSummaryCache: { expiresAt: number; summary: SpendSummary } | undefined;
+let currentMonthLocalCache: { expiresAt: number; nanoAiu: number } | undefined;
+
+/** Timestamp (ms) for 00:00 on the first day of the current calendar month. */
+function currentMonthStart(now = Date.now()): number {
+    const d = new Date(now);
+    return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0).getTime();
+}
+
+/** Sum current calendar-month AI credit usage (nano-AIU) from local logs. */
+function computeCurrentMonthNanoAiuFromLogs(refresh: boolean): number {
+    const monthStart = currentMonthStart();
+    let total = 0;
+
+    for (const dir of findAllChatSessionDirs(refresh)) {
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            continue;
+        }
+
+        for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
+                continue;
+            }
+
+            const filePath = path.join(dir, entry.name);
+            let stat: fs.Stats;
+            try {
+                stat = fs.statSync(filePath);
+            } catch {
+                continue;
+            }
+            // A file last modified before the month started cannot hold
+            // requests timestamped within the current month.
+            if (stat.mtimeMs < monthStart) {
+                continue;
+            }
+
+            const requests = readSpendRequestsFromChatSession(filePath, stat.mtimeMs);
+            for (const request of requests) {
+                const timestamp = request.timestamp ?? stat.mtimeMs;
+                if (timestamp >= monthStart) {
+                    total += request.nanoAiu;
+                }
+            }
+        }
+    }
+
+    return total;
+}
+
+function getCurrentMonthLocalNanoAiu(refresh: boolean): number {
+    if (!refresh && currentMonthLocalCache && currentMonthLocalCache.expiresAt > Date.now()) {
+        return currentMonthLocalCache.nanoAiu;
+    }
+    const nanoAiu = computeCurrentMonthNanoAiuFromLogs(refresh);
+    currentMonthLocalCache = { nanoAiu, expiresAt: Date.now() + SPEND_SCAN_CACHE_MS };
+    return nanoAiu;
+}
+
+function getMonthlyCreditLimitAic(): number {
+    const value = vscode.workspace
+        .getConfiguration('copilotUsageTracker')
+        .get<number>('monthlyCreditLimit', 100000);
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 100000;
+}
+
+/**
+ * Build the AI Credit Usage Meter for the current month. GitHub billing data
+ * takes priority when the user is signed in and the API is reachable; otherwise
+ * the figure is estimated from local logs (the same source as Spend Summary).
+ */
+async function computeCreditMeter(refresh: boolean): Promise<CreditMeter> {
+    const limitAic = getMonthlyCreditLimitAic();
+    const monthLabel = new Date().toLocaleString(undefined, { month: 'long', year: 'numeric' });
+
+    const github = await fetchCurrentMonthGitHubCreditUsage();
+    if (github) {
+        return { monthLabel, usedNanoAiu: github.nanoAiu, limitAic, source: 'github', generatedAt: Date.now() };
+    }
+
+    return {
+        monthLabel,
+        usedNanoAiu: getCurrentMonthLocalNanoAiu(refresh),
+        limitAic,
+        source: 'local',
+        generatedAt: Date.now(),
+    };
+}
+
+/** Render a fixed-width unicode progress bar for the meter (0..1 fraction). */
+function renderCreditBar(fraction: number, segments = 10): string {
+    const clamped = Math.max(0, Math.min(1, fraction));
+    const filled = Math.min(segments, Math.round(clamped * segments));
+    return '█'.repeat(filled) + '░'.repeat(segments - filled);
+}
+
+function creditMeterIcon(fraction: number): { icon: string; color?: string } {
+    if (fraction >= 1) {
+        return { icon: 'error', color: 'charts.red' };
+    }
+    if (fraction >= 0.8) {
+        return { icon: 'warning', color: 'charts.yellow' };
+    }
+    return { icon: 'dashboard', color: 'charts.green' };
+}
 
 function rememberSessionCandidate(candidate: SessionCandidate): void {
     const existing = sessionCandidateById.get(candidate.id);
@@ -1083,6 +1205,8 @@ async function backfillSessionsToServerOnce(context: vscode.ExtensionContext): P
 // ---- Tree View ----
 
 type TreeItemData =
+    | { kind: 'creditMeter'; meter: CreditMeter }
+    | { kind: 'creditMeterLoading' }
     | { kind: 'spendSummary'; summary: SpendSummary }
     | { kind: 'spendBucket'; bucket: SpendBucket }
     | { kind: 'spendModelBucket'; bucket: SpendModelBucket }
@@ -1193,10 +1317,26 @@ class UsageTreeProvider implements vscode.TreeDataProvider<TreeItemData> {
     private spendHistoryRequested = false;
     private requestFullSpendSummary: (() => void) | undefined;
     private debugLogsEnabled = isDebugLogsSettingEnabled();
+    private creditMeter: CreditMeter | undefined;
+    private creditMeterLoading = false;
 
     setSummary(summary: SessionSummary | undefined) {
         this.summary = summary;
         this._onDidChangeTreeData.fire();
+    }
+
+    setCreditMeter(meter: CreditMeter | undefined): void {
+        this.creditMeter = meter;
+        this.creditMeterLoading = false;
+        this._onDidChangeTreeData.fire();
+    }
+
+    /** Show a placeholder only when no meter has been computed yet. */
+    setCreditMeterLoading(): void {
+        if (!this.creditMeter) {
+            this.creditMeterLoading = true;
+            this._onDidChangeTreeData.fire();
+        }
     }
 
     setSpendSummary(summary: SpendSummary | undefined): void {
@@ -1229,6 +1369,39 @@ class UsageTreeProvider implements vscode.TreeDataProvider<TreeItemData> {
 
     getTreeItem(element: TreeItemData): vscode.TreeItem {
         switch (element.kind) {
+            case 'creditMeter': {
+                const m = element.meter;
+                const usedAic = m.usedNanoAiu / NANO_AIU_PER_AIC;
+                const fraction = m.limitAic > 0 ? usedAic / m.limitAic : (usedAic > 0 ? 1 : 0);
+                const pct = Math.round(fraction * 100);
+                const bar = renderCreditBar(fraction);
+                const sourceTag = m.source === 'github' ? 'GitHub' : 'local';
+                const item = new vscode.TreeItem(
+                    `AI Credits · ${m.monthLabel}`,
+                    vscode.TreeItemCollapsibleState.Collapsed
+                );
+                item.description = `${bar} ${formatAic(m.usedNanoAiu)}/${formatNumber(m.limitAic)} AIC (${pct}%) · ${sourceTag}`;
+                const { icon, color } = creditMeterIcon(fraction);
+                item.iconPath = new vscode.ThemeIcon(icon, color ? new vscode.ThemeColor(color) : undefined);
+                item.tooltip = [
+                    `AI Credit usage for ${m.monthLabel}`,
+                    `${formatAic(m.usedNanoAiu)} AIC used of ${formatNumber(m.limitAic)} AIC budget (${pct}%).`,
+                    formatUsdEstimate(m.usedNanoAiu),
+                    m.source === 'github'
+                        ? 'Source: GitHub billing API.'
+                        : 'Source: local debug/chat logs (GitHub billing data unavailable).',
+                    m.limitAic > 0
+                        ? ''
+                        : 'Set copilotUsageTracker.monthlyCreditLimit to track a monthly budget.',
+                ].filter(Boolean).join('\n');
+                return item;
+            }
+            case 'creditMeterLoading': {
+                const item = new vscode.TreeItem('AI Credit Usage Meter', vscode.TreeItemCollapsibleState.None);
+                item.description = 'loading...';
+                item.iconPath = new vscode.ThemeIcon('sync~spin');
+                return item;
+            }
             case 'spendSummary': {
                 const s = element.summary;
                 const item = new vscode.TreeItem('Spend Summary', vscode.TreeItemCollapsibleState.Collapsed);
@@ -1566,6 +1739,11 @@ class UsageTreeProvider implements vscode.TreeDataProvider<TreeItemData> {
     getChildren(element?: TreeItemData): TreeItemData[] {
         if (!element) {
             const roots: TreeItemData[] = [];
+            if (this.creditMeter) {
+                roots.push({ kind: 'creditMeter', meter: this.creditMeter });
+            } else if (this.creditMeterLoading) {
+                roots.push({ kind: 'creditMeterLoading' });
+            }
             if (this.spendSummary) {
                 roots.push({ kind: 'spendSummary', summary: this.spendSummary });
             }
@@ -1573,6 +1751,22 @@ class UsageTreeProvider implements vscode.TreeDataProvider<TreeItemData> {
                 roots.push({ kind: 'session', summary: this.summary });
             }
             return roots;
+        }
+
+        if (element.kind === 'creditMeter') {
+            const m = element.meter;
+            const usedAic = m.usedNanoAiu / NANO_AIU_PER_AIC;
+            const overAic = usedAic - m.limitAic;
+            const balanceRow: TreeItemData = overAic > 0
+                ? { kind: 'stat', label: 'Over budget', value: `${overAic.toFixed(2)} AIC` }
+                : { kind: 'stat', label: 'Remaining', value: `${Math.max(0, -overAic).toFixed(2)} AIC` };
+            return [
+                { kind: 'stat', label: 'Used', value: `${formatAic(m.usedNanoAiu)} AIC | ${formatUsdEstimate(m.usedNanoAiu)}` },
+                { kind: 'stat', label: 'Monthly limit', value: `${formatNumber(m.limitAic)} AIC` },
+                balanceRow,
+                { kind: 'stat', label: 'Source', value: m.source === 'github' ? 'GitHub API' : 'Local logs' },
+                { kind: 'stat', label: 'As of', value: new Date(m.generatedAt).toLocaleString() },
+            ];
         }
 
         if (element.kind === 'spendSummary') {
@@ -1915,6 +2109,37 @@ export function activate(context: vscode.ExtensionContext) {
         clearInterval(spendAutoRefreshInterval);
     }));
 
+    let creditMeterInFlight = false;
+    const refreshCreditMeter = (refresh = false) => {
+        if (creditMeterInFlight) {
+            return;
+        }
+        creditMeterInFlight = true;
+        treeProvider.setCreditMeterLoading();
+        void computeCreditMeter(refresh)
+            .then(meter => treeProvider.setCreditMeter(meter))
+            .catch(err => console.warn('Copilot Usage: failed to compute credit meter', err))
+            .finally(() => {
+                creditMeterInFlight = false;
+            });
+    };
+    const creditMeterAutoRefreshInterval = setInterval(() => {
+        refreshCreditMeter(true);
+    }, SPEND_AUTO_REFRESH_MS);
+    context.subscriptions.push(
+        new vscode.Disposable(() => clearInterval(creditMeterAutoRefreshInterval)),
+        vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration('copilotUsageTracker.monthlyCreditLimit')) {
+                refreshCreditMeter(true);
+            }
+        }),
+        vscode.authentication.onDidChangeSessions(event => {
+            if (event.provider.id === 'github') {
+                refreshCreditMeter(true);
+            }
+        }),
+    );
+
     // Auto-load the most recent session, prioritizing the current workspace
     const autoLoad = () => {
         const currentWsDebugDir = getCurrentWorkspaceDebugDir(context);
@@ -1984,6 +2209,7 @@ export function activate(context: vscode.ExtensionContext) {
                         setCurrentGraph(parsed.summary);
                         reportSessionToServer(parsed.summary);
                         scheduleSpendSummaryRefresh('today', true, 1000);
+                        refreshCreditMeter(true);
                     }
                 }
             }, 500);
@@ -1995,6 +2221,7 @@ export function activate(context: vscode.ExtensionContext) {
     autoLoad();
     watchCurrentSession();
     scheduleVisibleSpendSummaryRefresh();
+    refreshCreditMeter();
     void backfillSessionsToServerOnce(context);
 
     // Register chat participant (@usage)
@@ -2007,6 +2234,7 @@ export function activate(context: vscode.ExtensionContext) {
             autoLoad();
             watchCurrentSession();
             scheduleVisibleSpendSummaryRefresh(true);
+            refreshCreditMeter(true);
             vscode.window.showInformationMessage('Copilot Usage: Loaded most recent session.');
         })
     );
@@ -2016,6 +2244,7 @@ export function activate(context: vscode.ExtensionContext) {
             autoLoad();
             watchCurrentSession();
             scheduleVisibleSpendSummaryRefresh(true);
+            refreshCreditMeter(true);
         })
     );
 

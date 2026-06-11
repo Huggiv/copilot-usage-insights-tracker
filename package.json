@@ -206,6 +206,12 @@
           "default": "",
           "scope": "application",
           "description": "Override the user identifier sent to the server. Leave empty to use the signed-in GitHub account name (or OS username as fallback)."
+        },
+        "copilotUsageTracker.monthlyCreditLimit": {
+          "type": "number",
+          "default": 100000,
+          "minimum": 0,
+          "description": "Maximum AI Credits (AIC) budget for the current calendar month. Drives the 'AI Credit Usage Meter' shown at the top of the Token Usage view."
         }
       }
     }
