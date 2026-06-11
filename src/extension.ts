@@ -8,10 +8,12 @@ import {
     UserMessageSummary,
     SessionSummary,
     ToolDefinitionSize,
+    UsageSourceType,
     findSiblingChatSessionLog,
     NANO_AIU_PER_AIC,
     parseCreditDetailsNanoAiu,
     parseCopilotSessionFile,
+    parseUsageSessionFile,
     quickPeekHasBillingData,
     formatNumber,
     formatAic,
@@ -57,6 +59,8 @@ interface SessionCandidate {
     mainJsonl: string;
     chatSessionJsonl?: string;
     modifiedTime: number;
+    /** Identifies which parser to use.  Undefined means VS Code sources (existing routing). */
+    sourceType?: UsageSourceType;
 }
 
 interface SessionScanResult<T extends SessionCandidate = SessionCandidate> {
@@ -172,6 +176,103 @@ function getConfiguredSearchRoots(): string[] {
         .getConfiguration('copilotUsageTracker')
         .get<string[]>('searchRoots', [])
         .filter(pathExists);
+}
+
+function getConfiguredCliSearchRoots(): string[] {
+    return vscode.workspace
+        .getConfiguration('copilotUsageTracker')
+        .get<string[]>('cliSearchRoots', [])
+        .filter(pathExists);
+}
+
+function getConfiguredAgentSearchRoots(): string[] {
+    return vscode.workspace
+        .getConfiguration('copilotUsageTracker')
+        .get<string[]>('agentSearchRoots', [])
+        .filter(pathExists);
+}
+
+/**
+ * Collect .jsonl files directly inside `dir` (non-recursive) that look like
+ * Copilot CLI or local Agent usage logs.  Each file becomes one candidate.
+ */
+function collectFlatJsonlCandidates(
+    dir: string,
+    sourceType: UsageSourceType,
+    options: { modifiedSince?: number },
+    results: SessionCandidate[]
+): boolean {
+    let hasOlder = false;
+    if (!fs.existsSync(dir)) { return hasOlder; }
+
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return hasOlder;
+    }
+
+    for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) { continue; }
+        const filePath = path.join(dir, entry.name);
+        let stat: fs.Stats;
+        try { stat = fs.statSync(filePath); } catch { continue; }
+
+        if (options.modifiedSince !== undefined && stat.mtimeMs < options.modifiedSince) {
+            hasOlder = true;
+            continue;
+        }
+
+        results.push({
+            id: path.basename(entry.name, '.jsonl'),
+            mainJsonl: filePath,
+            modifiedTime: stat.mtimeMs,
+            sourceType,
+        });
+    }
+    return hasOlder;
+}
+
+/**
+ * Recursively collect Copilot CLI log directories up to `maxDepth`.
+ * A "CLI log directory" is any directory named `copilot-cli` or `gh-copilot`.
+ */
+function collectCopilotCliLogDirs(root: string, maxDepth: number, results: Set<string>): void {
+    if (maxDepth < 0 || !fs.existsSync(root)) { return; }
+
+    const base = path.basename(root).toLowerCase();
+    if (base === 'copilot-cli' || base === 'gh-copilot' || base === 'copilot_cli') {
+        results.add(root);
+        return;
+    }
+
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+        if (!entry.isDirectory()) { continue; }
+        collectCopilotCliLogDirs(path.join(root, entry.name), maxDepth - 1, results);
+    }
+}
+
+/**
+ * Recursively collect local Copilot Agent log directories up to `maxDepth`.
+ * A "agent log directory" is any directory named `copilot-agent` or `agent-runs`.
+ */
+function collectCopilotAgentLogDirs(root: string, maxDepth: number, results: Set<string>): void {
+    if (maxDepth < 0 || !fs.existsSync(root)) { return; }
+
+    const base = path.basename(root).toLowerCase();
+    if (base === 'copilot-agent' || base === 'agent-runs' || base === 'copilot_agent') {
+        results.add(root);
+        return;
+    }
+
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+        if (!entry.isDirectory()) { continue; }
+        collectCopilotAgentLogDirs(path.join(root, entry.name), maxDepth - 1, results);
+    }
 }
 
 function collectDebugLogDirs(root: string, maxDepth: number, results: Set<string>): void {
@@ -1091,13 +1192,22 @@ function getSessionCandidatePriority(candidate: SessionCandidate): number {
     return path.basename(candidate.mainJsonl) === 'main.jsonl' ? 2 : 1;
 }
 
+/** Deduplication key: namespace VS Code sources together; CLI and agent each get their own namespace. */
+function candidateMergeKey(candidate: SessionCandidate): string {
+    const src = candidate.sourceType === 'copilotCli'   ? 'cli'
+              : candidate.sourceType === 'copilotAgent' ? 'agent'
+              : 'vscode';
+    return `${src}:${candidate.id}`;
+}
+
 function mergeSessionCandidate(
     byId: Map<string, SessionCandidate & { wsDir: string }>,
     candidate: SessionCandidate & { wsDir: string }
 ): void {
-    const existing = byId.get(candidate.id);
+    const key = candidateMergeKey(candidate);
+    const existing = byId.get(key);
     if (!existing) {
-        byId.set(candidate.id, candidate);
+        byId.set(key, candidate);
         return;
     }
 
@@ -1105,7 +1215,7 @@ function mergeSessionCandidate(
     const existingPriority = getSessionCandidatePriority(existing);
     if (candidatePriority > existingPriority ||
         (candidatePriority === existingPriority && candidate.modifiedTime > existing.modifiedTime)) {
-        byId.set(candidate.id, candidate);
+        byId.set(key, candidate);
     }
 }
 
@@ -1134,6 +1244,41 @@ function findSessionsForDays(daysBack?: number): SessionScanResult<SessionCandid
         }
     }
 
+    // --- Copilot CLI sources ---
+    const maxDepth = vscode.workspace
+        .getConfiguration('copilotUsageTracker')
+        .get<number>('maxSearchDepth', 6);
+    const cliDirs = new Set<string>();
+    for (const root of getConfiguredCliSearchRoots()) {
+        collectCopilotCliLogDirs(root, maxDepth, cliDirs);
+        cliDirs.add(root); // also scan the configured root itself
+    }
+    for (const dir of cliDirs) {
+        const candidates: SessionCandidate[] = [];
+        const older = collectFlatJsonlCandidates(dir, 'copilotCli', { modifiedSince }, candidates);
+        hasOlder = hasOlder || older;
+        for (const c of candidates) {
+            rememberSessionCandidate(c);
+            mergeSessionCandidate(byId, { ...c, wsDir: 'CLI' });
+        }
+    }
+
+    // --- Copilot Agent sources ---
+    const agentDirs = new Set<string>();
+    for (const root of getConfiguredAgentSearchRoots()) {
+        collectCopilotAgentLogDirs(root, maxDepth, agentDirs);
+        agentDirs.add(root);
+    }
+    for (const dir of agentDirs) {
+        const candidates: SessionCandidate[] = [];
+        const older = collectFlatJsonlCandidates(dir, 'copilotAgent', { modifiedSince }, candidates);
+        hasOlder = hasOlder || older;
+        for (const c of candidates) {
+            rememberSessionCandidate(c);
+            mergeSessionCandidate(byId, { ...c, wsDir: 'Agent' });
+        }
+    }
+
     const sessions = [...byId.values()].sort((a, b) => b.modifiedTime - a.modifiedTime);
     return { sessions, hasOlder };
 }
@@ -1151,7 +1296,8 @@ function applyResolvedTitle(summary: SessionSummary, candidate?: SessionCandidat
 }
 
 function parseSessionCandidate(candidate: SessionCandidate) {
-    const parsed = parseCopilotSessionFile(candidate.mainJsonl);
+    // Use the source-routing entrypoint so CLI and agent files are parsed correctly.
+    const parsed = parseUsageSessionFile(candidate.mainJsonl, candidate.sourceType);
     if (parsed) {
         applyResolvedTitle(parsed.summary, candidate);
     }
@@ -1466,8 +1612,11 @@ class UsageTreeProvider implements vscode.TreeDataProvider<TreeItemData> {
             case 'session': {
                 const s = element.summary;
                 const titleDisplay = s.title || s.sessionId.slice(0, 8) + '...';
+                const sourceLabel = s.sourceType === 'copilotCli'   ? '[CLI] '
+                                  : s.sourceType === 'copilotAgent' ? '[Agent] '
+                                  : '';
                 const item = new vscode.TreeItem(
-                    titleDisplay,
+                    `${sourceLabel}${titleDisplay}`,
                     vscode.TreeItemCollapsibleState.Expanded
                 );
                 item.description = `${formatAic(s.totalNanoAiu)} AIC | ${formatNumber(s.totalTokens)} tokens | ${s.userMessages.length} messages`;

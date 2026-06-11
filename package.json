@@ -212,6 +212,18 @@
           "default": 100000,
           "minimum": 0,
           "description": "Maximum AI Credits (AIC) budget for the current calendar month. Drives the 'AI Credit Usage Meter' shown at the top of the Token Usage view."
+        },
+        "copilotUsageTracker.cliSearchRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Directories to scan for local Copilot CLI usage logs (.jsonl files). Only files in the specified directories are scanned — sub-directories named 'copilot-cli' or 'gh-copilot' are also discovered recursively up to maxSearchDepth. No data is sent from these paths unless server reporting is explicitly enabled."
+        },
+        "copilotUsageTracker.agentSearchRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Directories to scan for local Copilot Agent run logs (.jsonl files). Only files in the specified directories are scanned — sub-directories named 'copilot-agent' or 'agent-runs' are also discovered recursively up to maxSearchDepth. No data is sent from these paths unless server reporting is explicitly enabled."
         }
       }
     }
