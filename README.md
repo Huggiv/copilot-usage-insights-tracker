@@ -7,7 +7,7 @@ This VS Code extension reads your local Copilot Chat logs and shows cost, token,
 > **Not affiliated with GitHub or Microsoft.**
 > GitHub measures Copilot usage in AI credits (AIC), where **1 AIC = $0.01 USD**. See the official [GitHub Copilot billing docs](https://docs.github.com/en/billing/concepts/product-billing/github-copilot-billing) for details.
 
-![GitHub Copilot Chat Usage showing token, cost, and tool-call insights](https://github.com/Huggiv/copilot-usage-insights-tracker/raw/main/images/usage-screenshot.png)
+![GitHub Copilot Chat Usage showing token, cost, and tool-call insights](https://github.com/Huggiv/copilot-usage-insights-tracker/raw/main/images/copilot_usage_sidebar.gif)
 
 ---
 
@@ -30,6 +30,10 @@ This VS Code extension reads your local Copilot Chat logs and shows cost, token,
 ```text
 github.copilot.chat.agentDebugLog.fileLogging.enabled = true
 ```
+
+![VS Code showing how to enable Copilot debug logging](https://github.com/Huggiv/copilot-usage-insights-tracker/raw/main/images/copilot_enable_debug_log.gif)
+
+![VS Code Settings showing Copilot debug logging configuration](https://github.com/Huggiv/copilot-usage-insights-tracker/raw/main/images/copilot_usage_settings.gif)
 
 **2. Start a new Copilot Chat session.**
 
