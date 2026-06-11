@@ -26,4 +26,4 @@ server/**
 **/node_modules/**
 **/dist/**
 **/*.db
-images/copilot_usage_dashboard.gif
+images/*.gif
