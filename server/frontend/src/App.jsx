@@ -44,7 +44,7 @@ export default function App() {
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [sessions, setSessions] = useState([]);
   const [modelUsage, setModelUsage] = useState([]);
-  const [selectedUser, setSelectedUser] = useState('');
+  const [selectedUsers, setSelectedUsers] = useState([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedDays, setSelectedDays] = useState('current_month');
   const [loading, setLoading] = useState(true);
@@ -58,10 +58,10 @@ export default function App() {
 
   useEffect(() => {
     setSelectedModel('');
-    fetchModels(selectedUser)
+    fetchModels(selectedUsers)
       .then(setModels)
       .catch((err) => setError(err.message || 'Failed to load models'));
-  }, [selectedUser]);
+  }, [selectedUsers]);
 
   useEffect(() => {
     setLoading(true);
@@ -69,9 +69,9 @@ export default function App() {
 
     const daysParam = resolvePeriodToDays(selectedDays);
     Promise.all([
-      fetchSummary(selectedUser, daysParam),
-      fetchSessions(selectedUser, daysParam),
-      fetchModelUsage(selectedUser, selectedModel, daysParam),
+      fetchSummary(selectedUsers, selectedModel, daysParam),
+      fetchSessions(selectedUsers, selectedModel, daysParam),
+      fetchModelUsage(selectedUsers, selectedModel, daysParam),
     ])
       .then(([summaryRes, sessionsRes, modelUsageRes]) => {
         setSummary(summaryRes);
@@ -80,7 +80,7 @@ export default function App() {
       })
       .catch((err) => setError(err.message || 'Failed to load dashboard data'))
       .finally(() => setLoading(false));
-  }, [selectedUser, selectedModel, selectedDays]);
+  }, [selectedUsers, selectedModel, selectedDays]);
 
   return (
     <main className="app-shell">
@@ -96,10 +96,10 @@ export default function App() {
         <FilterBar
           users={users}
           models={models}
-          selectedUser={selectedUser}
+          selectedUsers={selectedUsers}
           selectedModel={selectedModel}
           selectedDays={selectedDays}
-          onUserChange={setSelectedUser}
+          onUsersChange={setSelectedUsers}
           onModelChange={setSelectedModel}
           onDaysChange={setSelectedDays}
         />
@@ -123,7 +123,7 @@ export default function App() {
           </section>
 
           <section className="surface-section">
-            <InsightsPanel sessions={sessions} />
+            <InsightsPanel sessions={sessions} modelUsage={modelUsage} />
           </section>
 
           <section className="surface-section">

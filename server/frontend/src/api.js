@@ -36,40 +36,47 @@ async function request(path) {
   return res.json();
 }
 
+function appendUserParams(params, userIds) {
+  const ids = Array.isArray(userIds) ? userIds : [userIds].filter(Boolean);
+  ids.filter(Boolean).forEach((userId) => params.append('user_id', userId));
+}
+
 export function fetchUsers() {
   return request('/api/v1/users');
 }
 
-export function fetchModels(userId) {
-  const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
-  return request(`/api/v1/models${qs}`);
+export function fetchModels(userIds) {
+  const params = new URLSearchParams();
+  appendUserParams(params, userIds);
+  const qs = params.toString();
+  return request(`/api/v1/models${qs ? `?${qs}` : ''}`);
 }
 
-export function fetchSummary(userId, days = 30) {
+export function fetchSummary(userIds, model, days = 30) {
   const params = new URLSearchParams();
-  if (userId) {
-    params.set('user_id', userId);
+  appendUserParams(params, userIds);
+  if (model) {
+    params.set('model', model);
   }
   params.set('days', days);
   const qs = params.toString();
   return request(`/api/v1/summary?${qs}`);
 }
 
-export function fetchSessions(userId, days = 30) {
+export function fetchSessions(userIds, model, days = 30) {
   const params = new URLSearchParams();
-  if (userId) {
-    params.set('user_id', userId);
+  appendUserParams(params, userIds);
+  if (model) {
+    params.set('model', model);
   }
   params.set('days', days);
   const qs = params.toString();
   return request(`/api/v1/sessions?${qs}`);
 }
 
-export function fetchModelUsage(userId, model, days = 30) {
+export function fetchModelUsage(userIds, model, days = 30) {
   const params = new URLSearchParams();
-  if (userId) {
-    params.set('user_id', userId);
-  }
+  appendUserParams(params, userIds);
   if (model) {
     params.set('model', model);
   }

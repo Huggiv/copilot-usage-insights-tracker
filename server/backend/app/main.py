@@ -398,6 +398,34 @@ def _apply_model_usage_upsert(
     return existing
 
 
+def _normalize_user_filters(user_id: list[str] | None) -> list[str]:
+    if not user_id:
+        return []
+
+    user_ids: list[str] = []
+    for value in user_id:
+        user_ids.extend(_split_csv(value))
+    return sorted(set(user_ids))
+
+
+def _model_session_ids_subquery(
+    *,
+    model: str,
+    user_ids: list[str],
+    cutoff: str | None,
+):
+    filters = [
+        ModelUsageRecord.session_id.is_not(None),
+        ModelUsageRecord.model == model,
+    ]
+    if user_ids:
+        filters.append(ModelUsageRecord.user_id.in_(user_ids))
+    if cutoff:
+        filters.append(ModelUsageRecord.date >= cutoff)
+
+    return select(ModelUsageRecord.session_id).where(*filters)
+
+
 @app.post("/api/v1/sessions/batch", response_model=list[SessionOut])
 def upsert_sessions_batch(
     payload: list[SessionIn],
@@ -428,7 +456,8 @@ def upsert_sessions_batch(
 
 @app.get("/api/v1/sessions", response_model=SessionsPageOut)
 def list_sessions(
-    user_id: str | None = Query(default=None),
+    user_id: list[str] | None = Query(default=None),
+    model: str | None = Query(default=None),
     days: int = Query(default=30, ge=0, le=3650),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
@@ -437,11 +466,19 @@ def list_sessions(
     from datetime import date as dt_date, timedelta
 
     filters = [SessionRecord.started_at.is_not(None)]
+    cutoff = None
     if days > 0:
         cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
         filters.append(SessionRecord.started_at >= cutoff)
-    if user_id:
-        filters.append(SessionRecord.user_id == user_id)
+    user_ids = _normalize_user_filters(user_id)
+    if user_ids:
+        filters.append(SessionRecord.user_id.in_(user_ids))
+    if model:
+        filters.append(SessionRecord.session_id.in_(_model_session_ids_subquery(
+            model=model,
+            user_ids=user_ids,
+            cutoff=cutoff,
+        )))
 
     total = int(db.scalar(select(func.count(SessionRecord.id)).where(*filters)) or 0)
     total_pages = (total + page_size - 1) // page_size if total > 0 else 0
@@ -477,21 +514,30 @@ def list_users(db: Session = Depends(get_db)) -> list[UserItem]:
 
 @app.get("/api/v1/summary", response_model=SummaryOut)
 def get_summary(
-    user_id: str | None = Query(default=None),
+    user_id: list[str] | None = Query(default=None),
+    model: str | None = Query(default=None),
     days: int = Query(default=30, ge=0, le=3650),
     db: Session = Depends(get_db),
 ) -> SummaryOut:
     from datetime import date as dt_date, timedelta
     
     filters = []
-    if user_id:
-        filters.append(SessionRecord.user_id == user_id)
+    user_ids = _normalize_user_filters(user_id)
+    if user_ids:
+        filters.append(SessionRecord.user_id.in_(user_ids))
     
     # Add date filtering
     filters.append(SessionRecord.started_at.is_not(None))
+    cutoff = None
     if days > 0:
         cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
         filters.append(SessionRecord.started_at >= cutoff)
+    if model:
+        filters.append(SessionRecord.session_id.in_(_model_session_ids_subquery(
+            model=model,
+            user_ids=user_ids,
+            cutoff=cutoff,
+        )))
 
     agg = db.execute(
         select(
@@ -531,7 +577,8 @@ def get_summary(
 
 @app.get("/api/v1/spend-summary", response_model=list[SpendDateOut])
 def get_spend_summary(
-    user_id: str | None = Query(default=None),
+    user_id: list[str] | None = Query(default=None),
+    model: str | None = Query(default=None),
     days: int = Query(default=30, ge=0, le=3650),
     db: Session = Depends(get_db),
 ) -> list[SpendDateOut]:
@@ -541,11 +588,19 @@ def get_spend_summary(
     filters = [
         SessionRecord.started_at.is_not(None),
     ]
+    cutoff = None
     if days > 0:
         cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
         filters.append(SessionRecord.started_at >= cutoff)
-    if user_id:
-        filters.append(SessionRecord.user_id == user_id)
+    user_ids = _normalize_user_filters(user_id)
+    if user_ids:
+        filters.append(SessionRecord.user_id.in_(user_ids))
+    if model:
+        filters.append(SessionRecord.session_id.in_(_model_session_ids_subquery(
+            model=model,
+            user_ids=user_ids,
+            cutoff=cutoff,
+        )))
 
     date_expr = func.substr(SessionRecord.started_at, 1, 10)
 
@@ -682,7 +737,7 @@ def upsert_model_usage_batch(
 
 @app.get("/api/v1/model-usage", response_model=ModelUsagePageOut)
 def list_model_usage(
-    user_id: str | None = Query(default=None),
+    user_id: list[str] | None = Query(default=None),
     date: str | None = Query(default=None),
     model: str | None = Query(default=None),
     days: int = Query(default=30, ge=0, le=3650),
@@ -697,8 +752,9 @@ def list_model_usage(
     if days > 0:
         cutoff = (dt_date.today() - timedelta(days=days)).isoformat()
         filters.append(ModelUsageRecord.date >= cutoff)
-    if user_id:
-        filters.append(ModelUsageRecord.user_id == user_id)
+    user_ids = _normalize_user_filters(user_id)
+    if user_ids:
+        filters.append(ModelUsageRecord.user_id.in_(user_ids))
     if date:
         filters.append(ModelUsageRecord.date == date)
     if model:
@@ -755,12 +811,13 @@ def list_model_usage(
 
 @app.get("/api/v1/models", response_model=list[ModelItem])
 def list_models(
-    user_id: str | None = Query(default=None),
+    user_id: list[str] | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> list[ModelItem]:
     query = select(ModelUsageRecord.model).where(ModelUsageRecord.model.is_not(None))
-    if user_id:
-        query = query.where(ModelUsageRecord.user_id == user_id)
+    user_ids = _normalize_user_filters(user_id)
+    if user_ids:
+        query = query.where(ModelUsageRecord.user_id.in_(user_ids))
 
     rows = db.execute(query.distinct().order_by(ModelUsageRecord.model.asc())).all()
     return [ModelItem(model=row[0]) for row in rows if row[0]]

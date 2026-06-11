@@ -66,6 +66,12 @@ def _model_usage_payload(date="2026-06-10", user_id="alex", model="gpt-4o", nano
     }
 
 
+def _model_usage_for_session(session_id, date="2026-06-10", user_id="alex", model="gpt-4o", nano_aiu=1000000000):
+    payload = _model_usage_payload(date=date, user_id=user_id, model=model, nano_aiu=nano_aiu)
+    payload["session_id"] = session_id
+    return payload
+
+
 def test_auth_required_for_write_endpoints(monkeypatch, tmp_path):
     client = _fresh_client(monkeypatch, tmp_path, auth_required=True)
 
@@ -128,6 +134,41 @@ def test_date_user_model_filtering(monkeypatch, tmp_path):
     assert body["total"] == 1
     assert body["items"][0]["user_id"] == "alex"
     assert body["items"][0]["model"] == "gpt-4o"
+
+
+def test_repeated_user_filters_and_model_filter_sessions_summary(monkeypatch, tmp_path):
+    client = _fresh_client(monkeypatch, tmp_path)
+
+    alex = _session_payload("model-session-1", user_id="alex")
+    alex["total_input_tokens"] = 25
+    sam = _session_payload("model-session-2", user_id="sam")
+    sam["total_input_tokens"] = 50
+    taylor = _session_payload("model-session-3", user_id="taylor")
+    taylor["total_input_tokens"] = 75
+
+    for payload in [alex, sam, taylor]:
+        response = client.post("/api/v1/sessions", json=payload, headers=_auth_headers())
+        assert response.status_code == 200
+
+    model_rows = [
+        _model_usage_for_session("model-session-1", user_id="alex", model="gpt-4o"),
+        _model_usage_for_session("model-session-2", user_id="sam", model="gpt-4o"),
+        _model_usage_for_session("model-session-3", user_id="taylor", model="gpt-4.1"),
+    ]
+    for payload in model_rows:
+        response = client.post("/api/v1/model-usage", json=payload, headers=_auth_headers())
+        assert response.status_code == 200
+
+    params = [("days", "0"), ("model", "gpt-4o"), ("user_id", "alex"), ("user_id", "sam")]
+
+    sessions = client.get("/api/v1/sessions", params=params).json()
+    assert sessions["total"] == 2
+    assert {item["user_id"] for item in sessions["items"]} == {"alex", "sam"}
+
+    summary = client.get("/api/v1/summary", params=params).json()
+    assert summary["total_sessions"] == 2
+    assert summary["distinct_users"] == 2
+    assert summary["total_input_tokens"] == 75
 
 
 def test_pagination_and_all_time_semantics(monkeypatch, tmp_path):

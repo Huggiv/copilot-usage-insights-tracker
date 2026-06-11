@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import { formatCredits, formatNumber, formatTokenCompact } from '../utils/format';
 
 const SVG_W = 720;
 const SVG_H = 200;
@@ -12,7 +13,7 @@ function fmt(value, decimals = 2) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: decimals }).format(value || 0);
 }
 
-function buildSeries(sessions) {
+function buildSessionSeries(sessions) {
   const buckets = new Map();
   for (const s of sessions || []) {
     const key = (s.started_at || '').slice(0, 10);
@@ -21,6 +22,48 @@ function buildSeries(sessions) {
   return [...buckets.entries()]
     .map(([date, cost]) => ({ date, cost }))
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function buildCostSeries(sessions, modelUsage) {
+  if (modelUsage?.length) {
+    const buckets = new Map();
+    for (const row of modelUsage) {
+      if (row.date) {
+        buckets.set(row.date, (buckets.get(row.date) || 0) + toCostUsd(row.nano_aiu));
+      }
+    }
+    return [...buckets.entries()]
+      .map(([date, cost]) => ({ date, cost }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  return buildSessionSeries(sessions);
+}
+
+function buildModelBars(modelUsage) {
+  const grouped = new Map();
+  for (const row of modelUsage || []) {
+    const model = row.model || 'Unknown';
+    const current = grouped.get(model) || {
+      model,
+      nanoAiu: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      sessions: 0,
+      requests: 0,
+    };
+    current.nanoAiu += row.nano_aiu || 0;
+    current.inputTokens += row.input_tokens || 0;
+    current.outputTokens += row.output_tokens || 0;
+    current.sessions += row.session_count || 0;
+    current.requests += row.request_count || 0;
+    grouped.set(model, current);
+  }
+
+  return [...grouped.values()]
+    .map((row) => ({ ...row, cost: toCostUsd(row.nanoAiu) }))
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 8);
 }
 
 function computePoints(series) {
@@ -69,11 +112,11 @@ export function CreditsMeter({ summary, selectedDays, selectedPeriod }) {
   );
 }
 
-export function CostChart({ sessions }) {
+export function CostChart({ sessions, modelUsage }) {
   const [tooltip, setTooltip] = useState(null);
   const svgRef = useRef(null);
 
-  const series = buildSeries(sessions);
+  const series = buildCostSeries(sessions, modelUsage);
   const pts = computePoints(series);
   const linePath = buildLinePath(pts);
 
@@ -153,10 +196,61 @@ export function CostChart({ sessions }) {
   );
 }
 
-export default function InsightsPanel({ sessions }) {
+export function ModelUsageBarChart({ modelUsage }) {
+  const [tooltip, setTooltip] = useState(null);
+  const bars = buildModelBars(modelUsage);
+  const maxCost = Math.max(...bars.map((bar) => bar.cost), 0.000001);
+
+  return (
+    <article className="insight-card insight-chart-card">
+      <h3>Model-Level Usage</h3>
+      <p className="insight-subtitle">Cost by model in USD — hover bars for usage detail</p>
+      {bars.length === 0 ? (
+        <p className="insight-empty">No model usage data in the selected period.</p>
+      ) : (
+        <div className="bar-chart-wrap" onMouseLeave={() => setTooltip(null)}>
+          <div className="bar-chart-grid">
+            {bars.map((bar) => {
+              const height = Math.max((bar.cost / maxCost) * 100, 3);
+              return (
+                <button
+                  type="button"
+                  className="model-bar-item"
+                  key={bar.model}
+                  onMouseEnter={() => setTooltip(bar)}
+                  onFocus={() => setTooltip(bar)}
+                  aria-label={`${bar.model} cost $${bar.cost.toFixed(6)}`}
+                >
+                  <span className="model-bar-track">
+                    <span className="model-bar-fill" style={{ height: `${height}%` }} />
+                  </span>
+                  <span className="model-bar-label" title={bar.model}>{bar.model}</span>
+                </button>
+              );
+            })}
+          </div>
+          {tooltip && (
+            <div className="bar-tooltip">
+              <div className="chart-tooltip-date">{tooltip.model}</div>
+              <div className="chart-tooltip-cost">${tooltip.cost.toFixed(6)}</div>
+              <div>AI Credits: {formatCredits(tooltip.nanoAiu)}</div>
+              <div>Requests: {formatNumber(tooltip.requests)}</div>
+              <div>Sessions: {formatNumber(tooltip.sessions)}</div>
+              <div>Input: {formatTokenCompact(tooltip.inputTokens)}</div>
+              <div>Output: {formatTokenCompact(tooltip.outputTokens)}</div>
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+export default function InsightsPanel({ sessions, modelUsage }) {
   return (
     <div className="insights-wrap">
-      <CostChart sessions={sessions} />
+      <CostChart sessions={sessions} modelUsage={modelUsage} />
+      <ModelUsageBarChart modelUsage={modelUsage} />
     </div>
   );
 }
