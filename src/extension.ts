@@ -44,7 +44,12 @@ const SPEND_SCAN_CACHE_MS = 30_000;
 const SPEND_AUTO_REFRESH_MS = 5 * 60 * 1000;
 const TITLE_CHAT_TAIL_BYTES = 256 * 1024;
 const TITLE_DEBUG_HEAD_BYTES = 16 * 1024;
-const SERVER_BACKFILL_STATE_KEY_PREFIX = 'copilotUsageTracker.serverBackfill.v2:';
+// Backfill state key is version-scoped so a fresh install or extension upgrade
+// always triggers a one-time upload of all available sessions.
+function getBackfillStateKey(context: vscode.ExtensionContext, serverUrl: string): string {
+    const version = (context.extension.packageJSON as { version: string }).version;
+    return `copilotUsageTracker.serverBackfill.${version}:${serverUrl}`;
+}
 
 interface SessionCandidate {
     id: string;
@@ -1044,7 +1049,7 @@ async function backfillSessionsToServerOnce(context: vscode.ExtensionContext): P
     if (!serverUrl) {
         return;
     }
-    const backfillStateKey = `${SERVER_BACKFILL_STATE_KEY_PREFIX}${serverUrl}`;
+    const backfillStateKey = getBackfillStateKey(context, serverUrl);
 
     if (context.globalState.get<boolean>(backfillStateKey) === true) {
         return;

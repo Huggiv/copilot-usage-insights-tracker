@@ -3,7 +3,7 @@
   "publisher": "Huggiv",
   "displayName": "Copilot Usage Insights Tracker",
   "description": "Track GitHub Copilot Chat token usage, AI credit costs, and tool calls — per message and per session, right inside VS Code.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "MIT",
   "icon": "images/copilot_usage_insights_icon_128.png",
   "homepage": "https://github.com/Huggiv/copilot-usage-insights-tracker",
@@ -80,7 +80,7 @@
         {
           "id": "copilot-usage",
           "title": "Copilot Usage",
-          "icon": "$(dashboard)"
+          "icon": "images/sidebar-icon.svg"
         }
       ]
     },

@@ -7,7 +7,7 @@ This VS Code extension reads your local Copilot Chat logs and shows cost, token,
 > **Not affiliated with GitHub or Microsoft.**
 > GitHub measures Copilot usage in AI credits (AIC), where **1 AIC = $0.01 USD**. See the official [GitHub Copilot billing docs](https://docs.github.com/en/billing/concepts/product-billing/github-copilot-billing) for details.
 
-![GitHub Copilot Chat Usage showing token, cost, and tool-call insights](images/usage-screenshot.png)
+![GitHub Copilot Chat Usage showing token, cost, and tool-call insights](https://github.com/Huggiv/copilot-usage-insights-tracker/raw/main/images/usage-screenshot.png)
 
 ---
 

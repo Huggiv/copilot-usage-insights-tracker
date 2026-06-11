@@ -1,0 +1,16 @@
+<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Copilot Usage">
+  <g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2.75 21.25 12 12 21.25 2.75 12 12 2.75Z" opacity="0.92"/>
+    <path d="M7.6 13.35v3.25"/>
+    <path d="M11.15 10.65v5.95"/>
+    <path d="M14.7 8.15v8.45"/>
+    <path d="M6.6 16.6h9.2"/>
+    <path d="M6.8 10.65 10.1 7.35l2.1 1.85 4.05-4.05"/>
+    <path d="M15.05 5.15h1.2v1.2"/>
+    <path d="M15.25 12.05h2.15c1.75 0 3.1 1.15 3.1 2.7 0 1.5-1.35 2.7-3.1 2.7h-2.15"/>
+    <path d="M16.05 13.95h2.05"/>
+    <path d="M16.05 15.55h2.05"/>
+    <circle cx="17" cy="14.75" r="0.18" fill="currentColor" stroke="none"/>
+    <circle cx="19" cy="14.75" r="0.18" fill="currentColor" stroke="none"/>
+  </g>
+</svg>
