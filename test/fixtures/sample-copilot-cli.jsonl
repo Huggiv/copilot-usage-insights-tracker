@@ -1,0 +1,5 @@
+{"session_id":"cli-sess-001","ts":1749600000000,"type":"cli_query","model":"gpt-4o","prompt":"How do I list all files in a directory recursively?","input_tokens":145,"output_tokens":92,"nanoAiu":237000000}
+{"session_id":"cli-sess-001","ts":1749600120000,"type":"cli_query","model":"gpt-4o","prompt":"What is the git status command and what does it show?","input_tokens":118,"output_tokens":78,"nanoAiu":196000000}
+{this is an intentionally malformed JSON line to test resilience}
+{"session_id":"cli-sess-001","ts":1749600240000,"type":"cli_query","model":"gpt-4o","prompt":"How do I create and switch to a new git branch?","input_tokens":132,"output_tokens":105,"nanoAiu":237000000}
+{"ts":1749600360000,"type":"cli_query","model":"gpt-4o","prompt":"What does git stash do?","input_tokens":97,"output_tokens":68,"cost":0.00165}

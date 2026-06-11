@@ -1,0 +1,10 @@
+{"session_id":"agent-sess-001","ts":1749700000000,"type":"agent_turn","user_message":"Fix the failing unit tests in test/parser.test.js","model":"claude-sonnet-4-5","input_tokens":3500,"output_tokens":1200,"nanoAiu":4700000000}
+{"session_id":"agent-sess-001","ts":1749700010000,"type":"agent_tool","name":"read_file","args":{"filePath":"test/parser.test.js","startLine":1,"endLine":100},"durationMs":45}
+{"session_id":"agent-sess-001","ts":1749700015000,"type":"agent_tool","name":"grep_search","args":{"query":"parseEntries","isRegexp":false},"durationMs":120}
+{"session_id":"agent-sess-001","ts":1749700020000,"type":"agent_tool","name":"replace_string_in_file","args":{"filePath":"src/parser.ts","oldString":"const x","newString":"const y"},"durationMs":23}
+{bad json line for resilience testing}
+{"session_id":"agent-sess-001","ts":1749700030000,"type":"agent_turn","user_message":"[Notification: Tests passed with exit code 0]","model":"claude-sonnet-4-5","input_tokens":500,"output_tokens":120,"nanoAiu":620000000}
+{"session_id":"agent-sess-001","ts":1749700035000,"type":"agent_tool","name":"run_in_terminal","args":{"command":"npm test"},"durationMs":4500}
+{"session_id":"agent-sess-001","ts":1749700040000,"type":"agent_turn","user_message":"Update the README with new configuration options","model":"claude-sonnet-4-5","input_tokens":1800,"output_tokens":650,"nanoAiu":2450000000}
+{"session_id":"agent-sess-001","ts":1749700045000,"type":"agent_tool","name":"read_file","args":{"filePath":"README.md","startLine":1,"endLine":50},"durationMs":30}
+{"session_id":"agent-sess-001","ts":1749700048000,"type":"agent_tool","name":"replace_string_in_file","args":{"filePath":"README.md"},"durationMs":15}
