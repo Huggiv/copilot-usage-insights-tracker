@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.0.0
+
+**Major feature release: Multi-source usage ingestion**
+
+- **Copilot CLI support**: Parse and analyze local Copilot CLI usage logs (JSONL format) with token and credit tracking.
+- **Copilot Agent support**: Ingest local Copilot Agent run logs with multi-turn execution and tool-call tracking.
+- **Source-aware discovery**: Automatically scan configurable directories for CLI and Agent logs with source de-duplication.
+- **Source labels in UI**: Sessions display `[CLI]` or `[Agent]` badges in tree view, search results, and chat participant output.
+- **Source-specific parser modules**: New modular architecture with `copilotCliParser.ts`, `copilotAgentParser.ts`, and shared `normalizers.ts` for field coercion and credit conversion.
+- **New configuration keys**: `copilotUsageTracker.cliSearchRoots` and `copilotUsageTracker.agentSearchRoots` to configure scan paths.
+- **Enhanced reporting**: Includes `source_category` field in server payloads (vscode, copilot_cli, copilot_agent).
+- **Backward compatible**: Existing VS Code debug log parsing and chatSessions files unchanged; full migration support.
+- **Comprehensive testing**: 16 new parser tests plus fixture files with real-world test cases and malformed-line resilience.
+
 ## 0.2.0
 
 - Adds model usage tracking and reporting to improve cost and usage visibility.
