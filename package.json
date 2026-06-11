@@ -2,7 +2,7 @@
   "name": "copilot-usage-insights-tracker",
   "publisher": "Huggiv",
   "displayName": "Copilot Usage Insights Tracker",
-  "description": "Analyze token usage and costs from GitHub Copilot Chat debug logs",
+  "description": "Track GitHub Copilot Chat token usage, AI credit costs, and tool calls — per message and per session, right inside VS Code.",
   "version": "1.0.1",
   "license": "MIT",
   "icon": "images/copilot_usage_insights_icon_128.png",
@@ -28,10 +28,20 @@
   ],
   "keywords": [
     "copilot",
+    "copilot chat",
     "usage",
+    "usage tracker",
     "insights",
     "tokens",
-    "costs"
+    "token usage",
+    "costs",
+    "ai credits",
+    "billing",
+    "analytics",
+    "productivity",
+    "tool calls",
+    "debug logs",
+    "github copilot"
   ],
   "activationEvents": [
     "onCommand:copilotUsageTracker.analyzeSession",
