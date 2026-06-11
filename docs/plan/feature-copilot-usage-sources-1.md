@@ -1,6 +1,6 @@
 ---
 goal: Extend Copilot Usage Insights Tracker to ingest and report local Copilot CLI and Copilot Agent usage alongside existing VS Code chat usage
-version: 1.0
+version: 2.0
 date_created: 2026-06-11
 last_updated: 2026-06-11
 owner: Copilot Usage Insights Tracker Maintainers
